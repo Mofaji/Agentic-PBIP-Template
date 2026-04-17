@@ -1,5 +1,7 @@
 # PBIP Agentic BI Starter Pack
 
+![Visitors](https://visitor-badge.glitch.me/badge?page_id=Mofaji.Agentic-PBIP-Template&left_color=green&right_color=blue)
+
 This repository is a starter template for agentic BI dashboard development with Power BI PBIP and AI-driven markdown testing.
 
 It combines:
