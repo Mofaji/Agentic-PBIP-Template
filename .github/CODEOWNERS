@@ -1,0 +1,15 @@
+# Update owners to your org/team handles.
+
+# Default owners
+* @your-org/bi-platform-team
+
+# Semantic model and DAX standards
+Template.SemanticModel/** @your-org/bi-modelers
+skills/powerbi-modeling/** @your-org/bi-modelers
+
+# Report UX and visual standards
+Template.Report/** @your-org/bi-report-authors
+
+# CI/CD and platform automation
+.github/workflows/** @your-org/data-platform-engineers
+scripts/** @your-org/data-platform-engineers

@@ -1,0 +1,83 @@
+name: AI Markdown PBIP Test
+
+on:
+  push:
+    branches:
+      - test
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model name to use for AI test execution
+        required: false
+        default: gpt-4.1
+        type: string
+      include_bpa_rules:
+        description: Include BPA rules payload in the prompt context
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  ai_markdown_test:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate PBIP files before AI test
+        shell: pwsh
+        run: |
+          ./scripts/validate-json.ps1
+          ./scripts/validate-pbip.ps1
+
+      - name: Execute markdown AI test prompt
+        shell: pwsh
+        env:
+          GITHUB_MODELS_API_KEY: ${{ secrets.GITHUB_MODELS_API_KEY }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        run: |
+          $modelName = "gpt-4.1"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.model }}" -ne "") {
+            $modelName = "${{ inputs.model }}"
+          }
+
+          $arguments = @(
+            "-PromptFile", "tests/prompts/PowerBI_Test.md",
+            "-OutputDir", "tests/results",
+            "-OutputFileName", "test_results.md",
+            "-Model", $modelName
+          )
+
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.include_bpa_rules }}" -eq "true") {
+            $arguments += "-IncludeBpaRules"
+          }
+
+          ./scripts/run-ai-md-test.ps1 @arguments
+
+      - name: Upload AI test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-markdown-pbip-test-${{ github.run_id }}
+          retention-days: 30
+          path: |
+            tests/results/**
+
+      - name: Commit AI test results to test branch
+        if: github.ref_name == 'test' && vars.AI_TEST_COMMIT_RESULTS == 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/results
+
+          if git diff --cached --quiet; then
+            echo "No AI test changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore(tests): update AI markdown PBIP test results [skip ci]"
+          git push

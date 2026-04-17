@@ -1,0 +1,12 @@
+**/.pbi/localSettings.json
+**/.pbi/cache.abf
+**/.pbi/editorSettings.json
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.tmp
+*.log

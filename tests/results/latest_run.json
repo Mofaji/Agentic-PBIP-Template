@@ -1,0 +1,8 @@
+﻿{
+    "generatedUtc":  "2026-04-17T12:48:10.4090121Z",
+    "promptFile":  "tests/prompts/PowerBI_Test.md",
+    "outputFile":  "tests\\results\\test_results.md",
+    "reason":  "No AI API key was found in GITHUB_MODELS_API_KEY or AZURE_OPENAI_API_KEY.",
+    "mode":  "skipped",
+    "historyFile":  "tests\\results\\history\\test_results_20260417_124810.md"
+}
