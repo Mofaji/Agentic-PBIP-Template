@@ -55,7 +55,7 @@ ProjectName.SemanticModel/
 # Dashboard Creation Steps
 
 1. **Understand data** – Read `.SemanticModel` folder for tables, columns, relationships, measures.
-2. **Create measures** – Default: place business measures in `_Measures` (create `_Measures = BLANK{}` if needed). Legacy-safe mode: if an existing working report already references measures in source tables (for example `MaterialMaster` / `Sales22_24J`), keep those measure home tables unless you migrate all visual references in the same change set.
+2. **Create measures** – Default: place business measures in `_Measures` (create `_Measures = BLANK{}` if needed). Legacy-safe mode: if an existing working report already references measures in source tables (for example `Fact-MaterialMaster` / `Dim-Sales`), keep those measure home tables unless you migrate all visual references in the same change set.
 3. **Create theme** – Save `<ThemeName>.json` in `RegisteredResources/`, reference in `report.json`.
 4. **Create SVG canvas backgrounds** – One per page, no visualizations, just layout/headers/cards/navigation. Save in `RegisteredResources/`.
 5. **Create SVG KPI measures** – In `_SVG_Measures` table (separate from `_Measures`). Naming: `P1_Sales_KPI_SVG`, `P2_Profit_KPI_SVG`, etc.
