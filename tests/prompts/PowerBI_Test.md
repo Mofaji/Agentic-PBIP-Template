@@ -48,17 +48,20 @@ Read and analyze these files:
 
 Extract and count:
 
-1. Table list
+1. Table list (include table name and each column under that table)
 2. Column list per table
 3. Calculated columns (`column <name> = ...`)
-4. Measure list per table (`measure '<name>' = ...`)
+4. Measure list per table (include names of each measure)
 5. Measures with missing `formatString`
 6. M query local absolute paths (`File.Contents("...")`)
 7. Date/auto-date signals (`LocalDateTable_*`, `DateTableTemplate_*`)
-8. Relationships:
+8. Relationships (complete relationship status, with key and direction):
 	- total count
 	- from/to columns
 	- bidirectional relationships (`crossFilteringBehavior: bothDirections`)
+9. Roles / RLS (`*.SemanticModel/definition/roles/*.tmdl`)
+10. Cultures / Translations (`*.SemanticModel/definition/cultures/*.tmdl`)
+11. Data Sources (Extract paths/URLs from M queries like `SharePoint.Files`, `Sql.Databases`, `File.Contents`, etc.)
 
 ### Phase 3: Build report inventory (manual analysis)
 
@@ -72,7 +75,7 @@ Read and analyze these files:
 Extract and count:
 
 1. Total pages and page names
-2. Total visuals
+2. Total visuals (include visuals with titles under each page name, explicitly slicers and tables)
 3. Visual type distribution
 4. Visuals per page
 5. Report measure references from visual JSON:
@@ -84,6 +87,8 @@ Extract and count:
 7. Additional metadata references where present:
 	- `selector.metadata`
 	- `queryRef`
+8. Themes (from `report.json` and `RegisteredResources`)
+9. Bookmarks (from `report.json`)
 
 ### Phase 4: Usage and integrity checks (manual, deterministic)
 
@@ -107,8 +112,17 @@ Using data from Phase 2 + 3, compute:
 
 Create or overwrite `Testing/test_results.md` with these sections:
 
-1. `# Measure Killer-Style PBIP Test Results`
-2. `## Test Metadata`
+1. `# <Dashboard Name> - Overall Dashboard Documentation`
+2. `## Business & Data Brief`
+	- Brief on the business/data side (e.g. Sales, Purchase, what the dashboard is about)
+3. `## Overview`
+	- Introduction of backend/frontend details, and explicitly mention BPA + Measure Killer type analysis
+4. `### Backend Details (Semantic Model)`
+	- Tables, Columns, Measures, and Relationships
+5. `### Frontend Details (Report Layout)`
+	- Pages, Visuals (with titles)
+6. `# Measure Killer-Style PBIP Test Results`
+7. `## Test Metadata`
 	- date/time
 	- scope note: local/offline PBIP only
 3. `## What Was Checked`
@@ -181,8 +195,13 @@ Important: Standard Markdown in GitHub does not support literal colored text rel
 
 Use this exact section order and style in `Testing/test_results.md`:
 
-1. `# Measure Killer-Style + BPA PBIP Test Results`
-2. Risk banner line (`> ⚠️ Overall Risk: ...` or `> ✅ Overall Risk: LOW`)
+1. `# <Dashboard Name> - Overall Dashboard Documentation`
+2. `## Business & Data Brief` (Brief on business/data side, e.g. Sales, Purchase, dashboard purpose)
+3. `## Overview` (Mention BPA + Measure Killer type analysis)
+4. `### Backend Details (Semantic Model)` (Tables, Columns, Measures, Relationships, Roles/RLS, Cultures, Data Sources)
+5. `### Frontend Details (Report Layout)` (Pages, Visuals, Titles, Themes, Bookmarks)
+6. `# Measure Killer-Style + BPA PBIP Test Results`
+7. Risk banner line (`> ⚠️ Overall Risk: ...` or `> ✅ Overall Risk: LOW`)
 3. `## Executive Summary` (3-6 bullets max)
 4. `## Test Metadata` (small key-value bullet list)
 5. `## Scope` with two checklists:
