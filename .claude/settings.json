@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powerbi-desktop:*)",
+      "Bash(powerbi-report-author:*)",
+      "PowerShell(powerbi-desktop:*)",
+      "PowerShell(powerbi-report-author:*)",
+      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *Test-PbipBridge.ps1*)",
+      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *Invoke-PbipVerify.ps1*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR\\scripts\\hooks\\pbip-stop-hook.ps1\"",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -3,9 +3,11 @@ You are making PowerBI dashboard using pbip file system. You are expert in Power
 If asked to make CSV of fake data, use python file with numpy and pandas to generate the data with all necessary columns and data types.
 ---
 
+
+
 # Mandatory Clarification Question
 
-Before generating or modifying dashboard pages, always ask the user:
+Before generating or modifying dashboard pages on initial prompt, always ask the user:
 
 `Do you want a Documentation page also?`
 
@@ -14,8 +16,9 @@ If the user says yes:
 - Generate an SVG documentation canvas from PBIP metadata
 - Use that SVG as the page background via `RegisteredResources`
 - Keep existing active page unchanged unless user asks to open `Documentation` by default
-
+- ignore after user selects no for rest of convo
 ---
+
 
 # PBIP File Structure
 
@@ -61,6 +64,47 @@ ProjectName.SemanticModel/
 5. **Create SVG KPI measures** – In `_SVG_Measures` table (separate from `_Measures`). Naming: `P1_Sales_KPI_SVG`, `P2_Profit_KPI_SVG`, etc.
 6. **Build visuals** – Layer chart/table/image visuals on top of SVG canvas background.
 7. **Write all files UTF-8 no-BOM** – Use Python: `open(f, 'w', encoding='utf-8')`.
+8. **Verify what actually rendered** – Never call a dashboard done on JSON validity alone. See *Visual Verification* below.
+
+---
+
+# Visual Verification (Power BI Desktop Bridge)
+
+Valid PBIR still renders wrong. A chart overlaps its SVG card title, labels truncate, a visual comes back blank, theme colors are stale. The Desktop Bridge closes that gap by driving a running Power BI Desktop and capturing what it actually drew.
+
+```
+edit PBIR/TMDL → validate → reload → screenshot-all → review PNGs → fix → repeat
+```
+
+## Setup (once per machine)
+
+- **Power BI Desktop ≥ 2.155.756.0** (June 2026). Below that the bridge does not exist and the preview checkbox is absent entirely.
+- Preview feature: *File > Options and settings > Options > Preview features > Enable external tool access to Power BI Desktop through secure local APIs*.
+- Two CLIs — the second one is not mentioned in the Microsoft overview doc:
+
+```bash
+npm install -g @microsoft/powerbi-desktop-bridge-cli@latest      # powerbi-desktop
+npm install -g @microsoft/powerbi-report-authoring-cli@latest    # powerbi-report-author
+```
+
+Confirm everything at once with `powershell -NoProfile -File scripts\Test-PbipBridge.ps1`.
+
+## How it runs
+
+A `Stop` hook in `.claude/settings.json` fires when the agent tries to end its turn. If the report or model definition changed, it runs `scripts/Invoke-PbipVerify.ps1` and blocks the turn until the rendered pages have been reviewed against `skills/powerbi-visual-verify/SKILL.md`.
+
+- **Fix budget: one round.** At most two blocks — review + fix, then confirm + report.
+- **Change detection is by content hash**, not by tool call, because this repo writes PBIP files from Python build scripts. Nothing changed means Power BI is never touched.
+- **The loop fails open.** No Desktop, no bridge, no CLI — the turn ends with a skip notice. A hook that blocked on a broken bridge would make the session impossible to end. When it skips, say so; do not claim a page renders correctly on JSON validation alone.
+
+Manual run: `powershell -NoProfile -File scripts\Invoke-PbipVerify.ps1 -Mode Review`
+
+## Gotchas that make screenshots lie
+
+- **Theme cache** — Desktop caches theme JSON. After editing a theme in `RegisteredResources/`, reload shows **stale colors**. Rename the theme file with a new suffix and update its `report.json` registration, or close and reopen Desktop.
+- **TMDL** — `reload` re-applies the model definition by default, but when a visual shows stale or missing measure values, reopen instead: `powerbi-desktop open "<project>.pbip"`. Relevant on every build that rewrites `_SVG_Measures.tmdl`.
+- **Wrong instance** — an idle *Untitled* Desktop window reports `connected` but fails every operation with `REPORT_DIR_REQUIRED`. The scripts match the PID by `currentFilePath`.
+- **One operation at a time** — never reload and screenshot concurrently against the same PID; the result is a `Cancelled` error.
 
 ---
 

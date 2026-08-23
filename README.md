@@ -31,13 +31,20 @@ follow `copilot-instructions.md`.
 ## Repository Structure
 
 - `.github/`: issue/PR templates, AI workflow, ownership
-- `skills/`: reusable Power BI modeling and review skills
+- `.claude/`: Claude Code settings, including the visual verification `Stop` hook
+- `skills/`: reusable Power BI skills
+  - `powerbi-modeling/`, `power-bi-model-design-review/`, `power-bi-performance-troubleshooting/`
+  - `powerbi-fieldparameter/`: field-parameter page builder (table + bar chart, bookmarks, toggles)
+  - `powerbi-visual-verify/`: rendered-screenshot review checklist
 - `Template.pbip`: PBIP entry point
 - `Template.Report/`: report pages, visuals, theme references
 - `Template.SemanticModel/`: TMDL-based semantic model files
-- `scripts/`: PBIP validation and AI test runner scripts
+- `scripts/`: PBIP validation, AI test runner, and Desktop Bridge verification scripts
 - `docs/`: operational guidance and rollout checklist
-- `tests/`: testing conventions and placeholders
+- `tests/`: testing conventions and placeholders (`tests/screenshots/` is generated and gitignored)
+- `python/`: standalone Python utilities for data validation, automated email reporting, and DB alert notifications
+  - `python/db_alerts/`: DB-triggered alert email builder (Outlook-safe HTML, `.env` credentials pattern)
+  - `python/email_reporting/`: Power BI page replication email reports with DAX-to-Python validation protocol
 
 ## Non-Negotiable PBIP Guardrails
 
@@ -51,6 +58,7 @@ These are the minimum rules every contributor must follow (full detail is in `co
 6. Follow repository formatting conventions for visuals (labels, axis behavior, sorting, month ordering, whole-number defaults).
 7. Use image visual pattern for SVG KPI cards (`sourceType='imageData'` with direct measure reference in `sourceField`).
 8. If generating fake CSV data, use Python with NumPy and pandas (no venv required).
+9. Never call a page done on JSON validity alone — verify the rendered screenshot against `skills/powerbi-visual-verify/SKILL.md`.
 
 ## Quick Start
 
@@ -59,7 +67,41 @@ These are the minimum rules every contributor must follow (full detail is in `co
 3. Open `Template.pbip` in Power BI Desktop.
 4. Build model objects in `Template.SemanticModel/definition/`.
 5. Build visuals/pages in `Template.Report/definition/`.
-6. Push to `test` branch (or run workflow manually) to execute AI markdown testing.
+6. Verify what actually rendered — see [Visual Verification](#visual-verification-power-bi-desktop-bridge). Confirm your setup once with `powershell -NoProfile -File scripts\Test-PbipBridge.ps1`.
+7. Push to `test` branch (or run workflow manually) to execute AI markdown testing.
+
+## Visual Verification (Power BI Desktop Bridge)
+
+Valid PBIR still renders wrong — a chart overlapping its SVG card title, truncated labels, a blank visual, stale theme colors. None of that is visible to JSON validation. This template closes the loop by driving a running Power BI Desktop and reviewing what it actually drew:
+
+```
+edit PBIR/TMDL → validate → reload → screenshot every page → review → fix → repeat
+```
+
+A `Stop` hook runs this automatically when the agent tries to end its turn, and blocks until the rendered pages have been reviewed against `skills/powerbi-visual-verify/SKILL.md`. Screenshots go to `tests/screenshots/` (gitignored).
+
+**Requires Power BI Desktop 2.155.756.0 (June 2026) or later** — below that build the Desktop Bridge does not exist. Enable *File > Options and settings > Options > Preview features > Enable external tool access to Power BI Desktop through secure local APIs*, then:
+
+```bash
+npm install -g @microsoft/powerbi-desktop-bridge-cli@latest      # powerbi-desktop
+npm install -g @microsoft/powerbi-report-authoring-cli@latest    # powerbi-report-author
+```
+
+| Script | Purpose |
+| --- | --- |
+| `scripts/Test-PbipBridge.ps1` | Preflight: version, bridge pipe, CLIs, matching instance, PBIR validity |
+| `scripts/Invoke-PbipVerify.ps1` | The loop: validate → reload → screenshot-all → page manifest |
+| `scripts/hooks/pbip-stop-hook.ps1` | `Stop` hook wrapper with change detection and fix budget |
+| `scripts/PbipBridge.Common.ps1` | Shared helpers |
+
+Design notes worth knowing before you rely on it:
+
+- **Fix budget is one round** — at most two blocks per turn (review + fix, then confirm + report).
+- **Change detection is by content hash**, not by tool call, so edits written by Python build scripts are caught too. Nothing changed means Power BI is never touched.
+- **The loop fails open.** No Desktop, no bridge, no CLI — the turn ends with a skip notice rather than trapping the session.
+- **Theme JSON is cached by Desktop.** After editing a theme, rename it with a new suffix and update its `report.json` registration, or reopen Desktop; a plain reload shows stale colors.
+
+Run it manually with `powershell -NoProfile -File scripts\Invoke-PbipVerify.ps1 -Mode Review`. Full detail is in `copilot-instructions.md`.
 
 ## Automation Overview
 
@@ -91,10 +133,26 @@ To run manually from GitHub Actions, use workflow dispatch and optionally overri
 For source-level numeric verification, this starter pack includes an instruction-driven Python validation pattern:
 
 - Prompt: `tests/prompts/Python_Data_Value_Test.md`
-- Guidance: `tests/python/README.md`
+- Guidance: `python/README.md`
 - Outputs (recommended): `tests/results/python_value_validation.md`, `tests/results/python_value_validation.json`, and history snapshots
 
 Teams create their own preferred Python validator implementation and align it to their SQL platform, coding standards, and governance requirements.
+
+## Python Email Reporting & Alerts
+
+The `python/` folder contains standalone utilities for automated reporting and alerting outside of the PBIP test pipeline:
+
+### Email Reporting
+- Folder: `python/email_reporting/`
+- Style & DAX-to-Python validation guide: `python/email_reporting/emal_style_instructions.md`
+- Replicates Power BI report pages as Outlook-safe HTML emails using Python + pandas
+- Follow the mandatory DAX-to-Python validation protocol in the style guide before implementing any metric
+
+### DB Alert Emails
+- Folder: `python/db_alerts/`
+- Build instructions: `python/db_alerts/ALERT_EMAIL_INSTRUCTIONS.md`
+- General-purpose DB-triggered alert email builder (pyodbc, Outlook-safe HTML, `.env` credentials)
+- Never hardcode credentials — use `.env` with `python-dotenv`
 
 ## Required GitHub Configuration
 

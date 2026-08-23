@@ -10,3 +10,10 @@ __pycache__/
 *.pyd
 *.tmp
 *.log
+
+# Visual verification loop (Power BI Desktop Bridge)
+tests/screenshots/
+.claude/.pbip-state/
+
+# Client proposals and commercial material - never publish
+Proposals/

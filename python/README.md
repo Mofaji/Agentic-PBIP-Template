@@ -8,8 +8,8 @@ Use this area as a build-your-own testing space so each team can create a valida
 
 1. Read and execute prompt guidance from `tests/prompts/Python_Data_Value_Test.md`.
 2. Create your preferred script in this folder, for example:
-	- `tests/python/validate_values.py`
-	- `tests/python/validate_sales_by_branch.py`
+	- `python/validate_values.py`
+	- `python/validate_sales_by_branch.py`
 3. Make sure your script can validate scenarios like:
 	- sales of branch `ABV` in March 2026
 4. Write outputs to `tests/results/` so the test evidence is preserved.
@@ -27,7 +27,7 @@ Use this area as a build-your-own testing space so each team can create a valida
 ## Example Command Pattern
 
 ```powershell
-python tests/python/<your_script_name>.py --branch ABV --month March --year 2026
+python python/<your_script_name>.py --branch ABV --month March --year 2026
 ```
 
 ## Dependencies
