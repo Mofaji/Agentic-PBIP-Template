@@ -11,6 +11,10 @@ __pycache__/
 *.tmp
 *.log
 
+# Per-user Claude Code overrides - blanket permissions belong here, not in the
+# shared settings.json that every cloner inherits.
+.claude/settings.local.json
+
 # Visual verification loop (Power BI Desktop Bridge)
 tests/screenshots/
 .claude/.pbip-state/

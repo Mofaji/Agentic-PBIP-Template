@@ -64,10 +64,10 @@ How to use this boilerplate
   - [ ] Added/updated `validate_<report>.py` tests or fixture checks
 
 10) Quick template commit message
-"chore(report): implement <ReportName> measures — follow powerbi-reporting SKILL (validate totals and page filters)"
+"chore(report): implement <ReportName> measures — follow repository visual formatting rules (validate totals and page filters)"
 
 11) Minimal SKILL usage snippet for developers
-1. Review `skills/powerbi-reporting/SKILL.md`.
+1. Review the *Visual Formatting Rules* and *General Dashboard Formatting Rules* sections of `copilot-instructions.md`.
 2. Run validation locally:
 ```bash
 python validate_<report>.py --month 202604

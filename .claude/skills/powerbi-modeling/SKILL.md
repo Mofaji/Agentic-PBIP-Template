@@ -1,6 +1,6 @@
 ---
 name: powerbi-modeling
-description: 'Power BI semantic modeling assistant for building optimized data models. Use when working with Power BI semantic models, creating measures, designing star schemas, configuring relationships, implementing RLS, or optimizing model performance. Triggers on queries about DAX calculations, table relationships, dimension/fact table design, naming conventions, model documentation, cardinality, cross-filter direction, calculation groups, and data model best practices. Always connects to the active model first using power-bi-modeling MCP tools to understand the data structure before providing guidance.'
+description: 'Power BI semantic modeling assistant for building optimized data models. Use when working with Power BI semantic models, creating measures, designing star schemas, configuring relationships, implementing RLS, or optimizing model performance. Triggers on queries about DAX calculations, table relationships, dimension/fact table design, naming conventions, model documentation, cardinality, cross-filter direction, calculation groups, and data model best practices. Where a Power BI modeling MCP server is configured, connect to the active model first to understand the data structure; otherwise read the TMDL under the .SemanticModel folder directly.'
 ---
 
 # Power BI Semantic Modeling
@@ -38,9 +38,8 @@ Use this skill when users ask about:
 ## Prerequisites
 
 ### Required Tools
-- **Power BI Modeling MCP Server**: Required for connecting to and modifying semantic models
-  - Enables: connection_operations, table_operations, measure_operations, relationship_operations, etc.
-  - Must be configured and running to interact with models
+- **Power BI Modeling MCP Server** (optional, not configured in this repo): when present, enables connection_operations, table_operations, measure_operations, relationship_operations, etc. against a live model.
+  - This template ships no `.mcp.json`. Without an MCP server, read and edit the TMDL files under `Template.SemanticModel/definition/` directly - that is the supported path here.
 
 ### Optional Dependencies
 - **Microsoft Learn MCP Server**: Recommended for researching latest best practices

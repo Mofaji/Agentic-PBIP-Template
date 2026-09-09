@@ -6,10 +6,50 @@
       "PowerShell(powerbi-desktop:*)",
       "PowerShell(powerbi-report-author:*)",
       "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *Test-PbipBridge.ps1*)",
-      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *Invoke-PbipVerify.ps1*)"
+      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *Invoke-PbipVerify.ps1*)",
+      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *Test-PbipSemantics.ps1*)",
+      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *Invoke-PbipRefresh.ps1*)",
+      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *validate-json.ps1*)",
+      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *validate-pbip.ps1*)",
+      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File *Get-PbipLoadError.ps1*)"
     ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR\\scripts\\hooks\\pbip-session-brief.ps1\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR\\scripts\\hooks\\pbip-write-guard.ps1\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR\\scripts\\hooks\\pbip-validate-hook.ps1\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

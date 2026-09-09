@@ -5,10 +5,17 @@
 
 # Semantic model and DAX standards
 Template.SemanticModel/** @your-org/bi-modelers
-skills/powerbi-modeling/** @your-org/bi-modelers
+.claude/skills/powerbi-modeling/** @your-org/bi-modelers
 
 # Report UX and visual standards
 Template.Report/** @your-org/bi-report-authors
+
+# Agent steering, specs and hooks
+AGENTS.md @your-org/bi-platform-team
+CLAUDE.md @your-org/bi-platform-team
+copilot-instructions.md @your-org/bi-platform-team
+.github/copilot-instructions.md @your-org/bi-platform-team
+specs/** @your-org/bi-platform-team
 
 # CI/CD and platform automation
 .github/workflows/** @your-org/data-platform-engineers

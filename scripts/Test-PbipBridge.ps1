@@ -13,7 +13,7 @@
 [CmdletBinding()]
 param(
     [string]$RepoRoot,
-    [int]$WaitSeconds = 0
+    [int]$WaitSeconds = 30
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,11 +75,35 @@ if ($pipePids.Count -gt 0) {
 
 # 5. An instance with THIS project open
 if ($project) {
-    $inst = Get-BridgeInstance -Project $project -WaitSeconds $WaitSeconds
+    # Wait-PbipLoaded distinguishes "not running" from "ran and refused to load",
+    # which is the difference between a skip and a defect.
+    $inst = Wait-PbipLoaded -Project $project -TimeoutSeconds $WaitSeconds
     if ($inst.Ok) {
-        Add-Check -Name "Bridge instance" -Ok $true -Detail "pid $($inst.Pid) has $($project.ProjectName).pbip open"
+        Add-Check -Name "Bridge instance" -Ok $true -Detail "pid $($inst.Pid) has $($project.ProjectName).pbip open (loaded in $($inst.ElapsedSeconds)s)"
+    } elseif ($inst.Status -eq "other_project") {
+        Add-Check -Name "Bridge instance" -Ok $false -Detail $inst.Reason -Fix "Open this project in that Desktop instance, or start another one: powerbi-desktop open `"$($project.PbipPath)`""
+    } elseif ($inst.Status -eq "load_failed") {
+        Add-Check -Name "Bridge instance" -Ok $false -Detail "PBIP FAILED TO LOAD after $($inst.ElapsedSeconds)s - Desktop rejected the definition and is showing an error dialog." -Fix "Run scripts\Test-PbipSemantics.ps1 to find the offending object in source. Do not choose 'continue with errors' - it drops the failing objects and every screenshot after it lies."
     } else {
-        Add-Check -Name "Bridge instance" -Ok $false -Detail $inst.Reason -Fix "An idle 'Untitled' window connects but fails every reload/screenshot with REPORT_DIR_REQUIRED - the project itself must be open."
+        Add-Check -Name "Bridge instance" -Ok $false -Detail $inst.Reason -Fix "An idle 'Untitled' window connects but fails every reload/screenshot with REPORT_DIR_REQUIRED - the project itself must be open. If you did open it and the title is still 'Untitled', Desktop hit an error loading the PBIP: dismiss the error dialog - do not pick 'continue with errors', it opens the report with the broken parts dropped - then fix the PBIR/TMDL and run: powerbi-desktop open `"$($project.PbipPath)`""
+    }
+}
+
+# 6. Semantic validity - the load-time errors PBIR validation cannot see
+if ($project) {
+    try {
+        . (Join-Path $PSScriptRoot "Test-PbipSemantics.ps1")
+        $sem = Test-PbipSemantics -Project $project
+        if ($sem.Ok) {
+            Add-Check -Name "Semantic validation" -Ok $true -Detail "clean ($($sem.Checked) file(s), $($sem.Warnings.Count) warning(s))"
+        } else {
+            $first = @($sem.Errors)[0]
+            $more = ""
+            if ($sem.Errors.Count -gt 1) { $more = " (+$($sem.Errors.Count - 1) more)" }
+            Add-Check -Name "Semantic validation" -Ok $false -Detail "$($sem.Errors.Count) error(s): $first$more" -Fix "Run scripts\Test-PbipSemantics.ps1 for the full list. These are exactly what Desktop reports as an 'Issues were found' dialog at load time."
+        }
+    } catch {
+        Add-Check -Name "Semantic validation" -Ok $false -Detail "could not run: $($_.Exception.Message)" -Fix "Check scripts\Test-PbipSemantics.ps1 is present and parses."
     }
 }
 

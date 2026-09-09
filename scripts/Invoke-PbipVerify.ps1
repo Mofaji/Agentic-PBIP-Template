@@ -20,10 +20,75 @@ param(
     [string]$RepoRoot,
     [int]$Scale = 2,
     [int]$SettleMs = 400,
+    [int]$LoadTimeoutSeconds = 30,
+    [switch]$NoReopen,
     [switch]$TmdlChanged
 )
 
 . (Join-Path $PSScriptRoot "PbipBridge.Common.ps1")
+
+function Get-PbipDialogReport {
+    <#
+      Runs the UI Automation dialog capture in a child process (see Invoke-PsScript
+      for why it must not be dot-sourced) and renders the result as text for the
+      agent. Returns @{ Report; Dismissed }.
+
+      Never throws: a capture that fails leaves the caller with the state-based
+      diagnosis from Wait-PbipLoaded, which is already actionable.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Project,
+        [string]$OutputDir,
+        [switch]$Dismiss
+    )
+
+    $out = [PSCustomObject]@{ Report = $null; Found = $false; Dismissed = $false; Pid = $null }
+
+    try {
+        $script = Join-Path $PSScriptRoot "Get-PbipLoadError.ps1"
+        if (-not (Test-Path -LiteralPath $script)) { return $out }
+
+        $cliArgs = @("-Json")
+        if ($Dismiss) { $cliArgs += "-Dismiss" }
+        if ($OutputDir) { $cliArgs += @("-OutputDir", $OutputDir) }
+
+        $res = Invoke-PsScript -ScriptPath $script -ScriptArgs $cliArgs -TimeoutSeconds 90
+        if (-not $res.Json) { return $out }
+
+        $d = $res.Json
+        if (-not $d.Found) { return $out }
+
+        $out.Found = $true
+        $out.Dismissed = [bool]$d.Dismissed
+        if ($d.Pid) { $out.Pid = [int]$d.Pid }
+
+        $sb = New-Object System.Text.StringBuilder
+        $null = $sb.AppendLine("POWER BI DESKTOP REJECTED THE PROJECT - dialog captured")
+        $null = $sb.AppendLine("")
+        if ($d.Heading) { $null = $sb.AppendLine("Dialog: $($d.Heading)") }
+        if ($d.Text) {
+            $null = $sb.AppendLine("")
+            $null = $sb.AppendLine($d.Text)
+        }
+        if ($d.ErrorMessage -and $d.ErrorMessage -ne $d.Text) {
+            $null = $sb.AppendLine("")
+            $null = $sb.AppendLine("From 'Copy details to clipboard':")
+            $null = $sb.AppendLine($d.ErrorMessage)
+        }
+        if ($d.ScreenshotPath) { $null = $sb.AppendLine(""); $null = $sb.AppendLine("Dialog image:     $($d.ScreenshotPath)") }
+        if ($d.DetailsPath) { $null = $sb.AppendLine("Full diagnostic:  $($d.DetailsPath)") }
+        $null = $sb.AppendLine("")
+        $null = $sb.AppendLine("ACTION: fix the object named above in the PBIR/TMDL source, then end your turn.")
+        $null = $sb.AppendLine("Verification reopens the project and retries on its own. Do NOT choose 'continue")
+        $null = $sb.AppendLine("with errors': it loads the report with the failing objects dropped, so every")
+        $null = $sb.AppendLine("screenshot after it shows a report that is not in source.")
+
+        $out.Report = $sb.ToString().TrimEnd()
+        return $out
+    } catch {
+        return $out
+    }
+}
 
 function Invoke-PbipVerify {
     [CmdletBinding()]
@@ -33,6 +98,8 @@ function Invoke-PbipVerify {
         [string]$RepoRoot,
         [int]$Scale = 2,
         [int]$SettleMs = 400,
+        [int]$LoadTimeoutSeconds = 30,
+        [switch]$NoReopen,
         [switch]$TmdlChanged
     )
 
@@ -70,8 +137,105 @@ function Invoke-PbipVerify {
         }
     }
 
+    # --- 2b. Semantic gate ------------------------------------------------------
+    # PBIR validation is report-side only, so a model that Desktop will refuse to
+    # load (a measure colliding with a column, an unresolved reference) sails
+    # through it. These checks are the source-side equivalent of the "Issues were
+    # found" dialog, and running them here means the dialog never appears.
+    #
+    # Dot-sourced HERE, not at script scope, on purpose: Test-PbipSemantics.ps1 has
+    # its own param block, and dot-sourcing it at the top would clobber this
+    # script's $RepoRoot with $null before the bottom-of-file call reads it. By this
+    # point $RepoRoot has already been consumed by Get-PbipProject above.
+    try {
+        . (Join-Path $PSScriptRoot "Test-PbipSemantics.ps1")
+        $sem = Test-PbipSemantics -Project $project
+        if (-not $sem.Ok) {
+            $detail = ($sem.Errors | ForEach-Object { "  - $_" }) -join "`n"
+            return [PSCustomObject]@{
+                Status = "validation_failed"; Ok = $false
+                Message = "Semantic validation failed ($($sem.Errors.Count) error(s)) - Desktop was NOT reloaded.`nThese are the failures Power BI Desktop reports as an 'Issues were found' dialog at load time:`n$detail"
+                Screenshots = @(); Warnings = @(); OutputDir = $OutputDir; Pid = $null
+            }
+        }
+        foreach ($w in $sem.Warnings) { $warnings.Add($w) }
+    } catch {
+        # Never let the semantic gate itself break the loop.
+        $warnings.Add("Semantic validation could not run: $($_.Exception.Message)")
+    }
+
     # --- 3. Find the instance holding THIS project ------------------------------
-    $inst = Get-BridgeInstance -Project $project -WaitSeconds 5
+    # Waits out a slow open, then classifies the failure instead of reporting every
+    # cause as the same skip. 'load_failed' means Desktop rejected the definition
+    # and is sitting behind a modal - a defect to fix, not a bridge outage.
+    $inst = Wait-PbipLoaded -Project $project -TimeoutSeconds $LoadTimeoutSeconds
+
+    # Recover from a rejected definition, without leaving windows behind.
+    #
+    # Order: read the dialog, dismiss it, wait for that instance to go, and only
+    # then open. It has to be that way round because "powerbi-desktop open" starts
+    # a NEW instance rather than reusing the running one, and Desktop takes a moment
+    # to exit after its error dialog is dismissed - opening into that gap leaves a
+    # second window behind.
+    #
+    # Invoke-PbipReopen holds the contract that the running-instance count returns
+    # to its starting value if the reopen fails.
+    $reopenable = @("load_failed", "not_running")
+
+    if (-not $inst.Ok -and $reopenable -contains $inst.Status) {
+        $dialog = [PSCustomObject]@{ Report = $null; Found = $false; Dismissed = $false; Pid = $null }
+        if ($inst.Status -eq "load_failed") {
+            # Dismiss unconditionally here: the modal blocks Desktop's own File >
+            # Open, so it has to go before any reopen can work. The message has
+            # already been captured by this point.
+            $dialog = Get-PbipDialogReport -Project $project -OutputDir $OutputDir -Dismiss
+        }
+
+        if (-not $NoReopen) {
+            # An instance that was showing a load-error dialog never loaded a
+            # document, so closing it loses nothing. That is the only pre-existing
+            # instance this is allowed to close.
+            $spent = @()
+            if ($dialog.Pid) { $spent += [int]$dialog.Pid }
+
+            $re = Invoke-PbipReopen -Project $project -TimeoutSeconds $LoadTimeoutSeconds -ClosePids $spent
+
+            if ($re.Ok) {
+                $inst = [PSCustomObject]@{
+                    Ok = $true; Pid = $re.Pid; Status = "loaded"; Reason = $null; ElapsedSeconds = 0
+                }
+                if ($re.Status -eq "opened") {
+                    $warnings.Add("Power BI Desktop had rejected the project; it was reopened automatically after the fix and loaded cleanly.")
+                }
+            } else {
+                # Failed again. Capture the current dialog, then hand back exactly
+                # the instance count we started with.
+                if ($re.Status -eq "load_failed") {
+                    $dialog = Get-PbipDialogReport -Project $project -OutputDir $OutputDir -Dismiss
+                }
+                if ($re.StartedPid) { $null = Close-PbipInstance -ProcessId $re.StartedPid }
+
+                $msg = $re.Reason
+                if ($dialog.Report) {
+                    $msg = $dialog.Report + "`n`n" + "Reopened automatically after capturing this; it failed to load the same way. Fix the source above - the next round reopens and retries on its own."
+                }
+                return [PSCustomObject]@{
+                    Status = "load_failed"; Ok = $false; Message = $msg
+                    Screenshots = @(); Warnings = @($warnings); OutputDir = $OutputDir; Pid = $null
+                }
+            }
+        } elseif (-not $inst.Ok) {
+            $msg = $inst.Reason
+            if ($dialog.Report) {
+                $msg = $dialog.Report + "`n`n" + "Reopen is disabled (-NoReopen). After fixing, reopen with: powerbi-desktop open `"$($project.PbipPath)`""
+            }
+            return [PSCustomObject]@{
+                Status = "load_failed"; Ok = $false; Message = $msg
+                Screenshots = @(); Warnings = @($warnings); OutputDir = $OutputDir; Pid = $null
+            }
+        }
+    }
+
     if (-not $inst.Ok) {
         return [PSCustomObject]@{
             Status = "bridge_unavailable"; Ok = $false; Message = $inst.Reason
@@ -215,11 +379,18 @@ function Format-PbipVerifyReport {
     param(
         [Parameter(Mandatory = $true)]$Result,
         [ValidateSet("Review", "Confirm")][string]$Mode = "Review",
-        [string]$ChecklistPath = "skills/powerbi-visual-verify/SKILL.md"
+        [string]$ChecklistPath = ".claude/skills/powerbi-visual-verify/SKILL.md"
     )
 
     $sb = New-Object System.Text.StringBuilder
     $null = $sb.AppendLine("== PBIP visual verification ($($Result.Status)) ==")
+
+    if ($Result.Status -eq "load_failed") {
+        $null = $sb.AppendLine($Result.Message)
+        $null = $sb.AppendLine("")
+        $null = $sb.AppendLine("No screenshots exist for this round - the project never opened.")
+        return $sb.ToString()
+    }
 
     if ($Result.Status -eq "validation_failed") {
         $null = $sb.AppendLine($Result.Message)
@@ -272,7 +443,7 @@ function Format-PbipVerifyReport {
 
 # Auto-run only when executed directly, not when dot-sourced by the hook.
 if ($MyInvocation.InvocationName -ne '.') {
-    $result = Invoke-PbipVerify -Mode $Mode -OutputDir $OutputDir -RepoRoot $RepoRoot -Scale $Scale -SettleMs $SettleMs -TmdlChanged:$TmdlChanged
+    $result = Invoke-PbipVerify -Mode $Mode -OutputDir $OutputDir -RepoRoot $RepoRoot -Scale $Scale -SettleMs $SettleMs -LoadTimeoutSeconds $LoadTimeoutSeconds -NoReopen:$NoReopen -TmdlChanged:$TmdlChanged
     Write-Host (Format-PbipVerifyReport -Result $result -Mode $Mode)
     if ($result.Ok) { exit 0 } else { exit 1 }
 }

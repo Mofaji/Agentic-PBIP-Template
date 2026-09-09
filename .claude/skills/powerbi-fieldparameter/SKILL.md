@@ -1,7 +1,6 @@
 ---
-name: fieldparam-report-builder
+name: powerbi-fieldparameter
 description: "Builds a complete Power BI PBIP field-parameter-based report page with a Table and Bar Chart visual that share two dynamic field parameters (one for text dimensions, one for numeric measures), plus four toggle buttons and two bookmarks to switch between modes. Use when: building a dynamic pivot page, adding field parameters to a PBIP report, creating a table/bar-chart toggle, setting up bookmark-based view switching."
-argument-hint: "Provide SOURCE_TABLE, dimension columns (label+column name), measure fields (label+field name), page ID, and optionally button/background colors"
 ---
 
 # Field Parameter Report Builder
