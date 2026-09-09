@@ -292,6 +292,315 @@ function Get-BridgeInstance {
     return [PSCustomObject]@{ Ok = $true; Pid = $matchPid; Instances = $instances; Reason = $null }
 }
 
+function Invoke-PsScript {
+    <#
+      Runs a PowerShell script as a child process under a hard timeout, returning
+      @{ ExitCode; Stdout; Stderr; Json }.
+
+      Used for the UI Automation dialog capture. Two reasons it must not be
+      dot-sourced instead: a UIA tree walk against a wedged Desktop can block
+      indefinitely, and Get-PbipLoadError.ps1 declares $OutputDir and
+      $TimeoutSeconds parameters that would overwrite the caller's variables of
+      the same name.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [string[]]$ScriptArgs = @(),
+        [int]$TimeoutSeconds = 90
+    )
+
+    $quoted = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $ScriptPath + '"'))
+    foreach ($a in $ScriptArgs) {
+        $t = [string]$a
+        if ($t -match '\s' -and -not ($t.StartsWith('"') -and $t.EndsWith('"'))) {
+            $quoted += '"' + ($t -replace '"', '\"') + '"'
+        } else {
+            $quoted += $t
+        }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "powershell.exe"
+    $psi.Arguments = ($quoted -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $proc = $null
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $proc.Kill() } catch { }
+            return [PSCustomObject]@{ ExitCode = 124; Stdout = ""; Stderr = "Timed out after ${TimeoutSeconds}s."; Json = $null }
+        }
+        $proc.WaitForExit()
+
+        $stdout = $outTask.Result
+        $stderr = $errTask.Result
+        if ($null -eq $stdout) { $stdout = "" }
+        if ($null -eq $stderr) { $stderr = "" }
+
+        $json = $null
+        $trimmed = $stdout.Trim()
+        if ($trimmed.StartsWith("{") -or $trimmed.StartsWith("[")) {
+            try { $json = $trimmed | ConvertFrom-Json } catch { $json = $null }
+        }
+
+        return [PSCustomObject]@{ ExitCode = $proc.ExitCode; Stdout = $stdout; Stderr = $stderr; Json = $json }
+    } catch {
+        return [PSCustomObject]@{ ExitCode = 126; Stdout = ""; Stderr = $_.Exception.Message; Json = $null }
+    } finally {
+        if ($proc) { $proc.Dispose() }
+    }
+}
+
+function Wait-ProcessExit {
+    param([int]$ProcessId, [int]$TimeoutSeconds = 20)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if (-not $p) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue))
+}
+
+function Close-PbipInstance {
+    <#
+      Closes ONE Power BI Desktop instance, politely first.
+
+      Only ever call this on an instance proven to hold no document: either one
+      this run started itself, or the one that was showing a load-error dialog
+      (a rejected definition never loaded, so there is nothing in it to lose).
+      Never call it on an arbitrary "Untitled" window - that could be a new report
+      someone is building.
+
+      Returns $true when the process is gone.
+    #>
+    param([int]$ProcessId, [int]$GraceSeconds = 10)
+
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $p) { return $true }
+
+    try { $null = $p.CloseMainWindow() } catch { }
+    if (Wait-ProcessExit -ProcessId $ProcessId -TimeoutSeconds $GraceSeconds) { return $true }
+
+    # It ignored the close request - a modal can swallow WM_CLOSE.
+    try { $p.Kill() } catch { return $false }
+    return (Wait-ProcessExit -ProcessId $ProcessId -TimeoutSeconds 5)
+}
+
+function Invoke-PbipReopen {
+    <#
+      Opens the project in Power BI Desktop so that exactly one instance ends up
+      holding it.
+
+      Two behaviours of Desktop drive the design:
+        - "powerbi-desktop open" starts a NEW instance instead of reusing a running
+          one, so any stale window must be gone before opening or a second one is
+          left behind.
+        - Desktop usually exits by itself once its load-error dialog is dismissed,
+          but not always immediately, so the exit is waited for rather than assumed.
+
+      Contract: on failure the instance count returns to what it was on entry. Any
+      instance this function starts, it also cleans up.
+
+      Returns @{ Ok; Pid; Status; Reason; StartedPid }.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Project,
+        [int]$TimeoutSeconds = 60,
+        [int[]]$ClosePids = @()
+    )
+
+    # Already open? Never start a second copy of the same project.
+    $existing = Get-BridgeInstance -Project $Project
+    if ($existing.Ok) {
+        return [PSCustomObject]@{
+            Ok = $true; Pid = $existing.Pid; Status = "already_open"
+            Reason = $null; StartedPid = $null
+        }
+    }
+
+    # Clear the instances we know are spent (a failed load holds no document).
+    foreach ($deadPid in $ClosePids) {
+        if ($deadPid -gt 0) { $null = Close-PbipInstance -ProcessId $deadPid }
+    }
+
+    $before = @(Get-Process PBIDesktop -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+
+    $open = Invoke-BridgeCli -Exe "powerbi-desktop" -CliArgs @("open", $Project.PbipPath) -TimeoutSeconds 90
+    if ($open.ExitCode -eq 127) {
+        return [PSCustomObject]@{
+            Ok = $false; Pid = $null; Status = "cli_missing"; Reason = $open.Stderr; StartedPid = $null
+        }
+    }
+
+    $inst = Wait-PbipLoaded -Project $Project -TimeoutSeconds $TimeoutSeconds
+
+    # Whatever appeared during this call is ours, and ours alone to clean up.
+    $after = @(Get-Process PBIDesktop -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    $startedPid = $null
+    foreach ($id in $after) { if ($before -notcontains $id) { $startedPid = $id; break } }
+
+    if ($inst.Ok) {
+        return [PSCustomObject]@{
+            Ok = $true; Pid = $inst.Pid; Status = "opened"; Reason = $null; StartedPid = $startedPid
+        }
+    }
+
+    return [PSCustomObject]@{
+        Ok = $false; Pid = $null; Status = $inst.Status; Reason = $inst.Reason; StartedPid = $startedPid
+    }
+}
+
+function Wait-PbipLoaded {
+    <#
+      Waits up to -TimeoutSeconds for a Desktop instance to actually have THIS
+      project open, then says WHY if it never did.
+
+      This exists because "no instance has this project open" has three completely
+      different causes that the loop used to report identically as a skip:
+
+        not_running   Desktop is closed. Nothing to verify. Fail open.
+        no_bridge     Desktop is up but the preview flag is off. Fail open.
+        load_failed   Desktop is up, the bridge is up, and the project still is not
+                      loaded - which means Desktop rejected the definition and is
+                      sitting behind an "Issues were found" dialog with the window
+                      title on "Untitled". That is a real defect in the source, and
+                      it must be reported as one rather than silently skipped.
+
+      The dialog text itself is not reachable: during a failed load there is no
+      report to serve the bridge API, and the dialog is WPF UI no method exposes.
+      What IS reliable is the state, and the state is enough to name the problem.
+
+      Returns @{ Ok; Pid; Status; Reason; ElapsedSeconds }.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Project,
+        [int]$TimeoutSeconds = 30,
+        [int]$PollMs = 1500
+    )
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastReason = $null
+
+    $lastInstances = @()
+
+    while ($true) {
+        $inst = Get-BridgeInstance -Project $Project
+        $lastInstances = @($inst.Instances)
+        if ($inst.Ok) {
+            $sw.Stop()
+            return [PSCustomObject]@{
+                Ok = $true; Pid = $inst.Pid; Status = "loaded"; Reason = $null
+                ElapsedSeconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+            }
+        }
+        $lastReason = $inst.Reason
+
+        # A missing CLI will never resolve by waiting.
+        if ($lastReason -and $lastReason -match 'is not installed or not on PATH') {
+            $sw.Stop()
+            return [PSCustomObject]@{
+                Ok = $false; Pid = $null; Status = "cli_missing"; Reason = $lastReason
+                ElapsedSeconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+            }
+        }
+
+        if ((Get-Date) -ge $deadline) { break }
+        Start-Sleep -Milliseconds $PollMs
+    }
+
+    $sw.Stop()
+    $elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+
+    $procs = @(Get-Process PBIDesktop -ErrorAction SilentlyContinue)
+    $pipePids = @(Test-BridgePipe)
+
+    if ($procs.Count -eq 0) {
+        return [PSCustomObject]@{
+            Ok = $false; Pid = $null; Status = "not_running"
+            Reason = "Power BI Desktop is not running. Open the project: powerbi-desktop open `"$($Project.PbipPath)`""
+            ElapsedSeconds = $elapsed
+        }
+    }
+
+    if ($pipePids.Count -eq 0) {
+        return [PSCustomObject]@{
+            Ok = $false; Pid = $null; Status = "no_bridge"
+            Reason = "Power BI Desktop is running but exposes no bridge pipe. Enable File > Options and settings > Options > Preview features > 'Enable external tool access to Power BI Desktop through secure local APIs', then restart Desktop."
+            ElapsedSeconds = $elapsed
+        }
+    }
+
+    # Desktop up, bridge up, project still not loaded. Three different situations,
+    # and calling them all "failed to load" would be wrong: Desktop may simply
+    # have a different project open.
+    $titles = @()
+    foreach ($p in $procs) {
+        try { if (-not [string]::IsNullOrWhiteSpace($p.MainWindowTitle)) { $titles += $p.MainWindowTitle } } catch { }
+    }
+    $untitled = @($titles | Where-Object { $_ -match '^\s*Untitled\b' })
+
+    $openFiles = @()
+    $blankInstance = $false
+    foreach ($i in $lastInstances) {
+        $names = $i.PSObject.Properties.Name
+        $fp = $null
+        foreach ($k in @('currentFilePath', 'filePath', 'path')) {
+            if ($names -contains $k -and -not [string]::IsNullOrWhiteSpace($i.$k)) { $fp = $i.$k; break }
+        }
+        if ($fp) { $openFiles += $fp } else { $blankInstance = $true }
+    }
+
+    # A different project being open is not a defect in this one. Fail open and name
+    # what is actually loaded, rather than crying "failed to load".
+    if ($openFiles.Count -gt 0 -and -not $blankInstance -and $untitled.Count -eq 0) {
+        return [PSCustomObject]@{
+            Ok = $false; Pid = $null; Status = "other_project"
+            Reason = ("Power BI Desktop is running with a different project open: {0}`nThis project is not loaded. Open it with: powerbi-desktop open `"{1}`"" -f ($openFiles -join ', '), $Project.PbipPath)
+            ElapsedSeconds = $elapsed
+        }
+    }
+
+    # An instance reporting no file, or a window still titled Untitled, is the
+    # signature of a definition Desktop rejected.
+
+    $sb = New-Object System.Text.StringBuilder
+    $null = $sb.AppendLine("PBIP FAILED TO LOAD - Power BI Desktop rejected the project definition.")
+    $null = $sb.AppendLine("")
+    $null = $sb.AppendLine("Waited ${elapsed}s (limit ${TimeoutSeconds}s). Desktop is running and the bridge is up (pid $($pipePids -join ', ')), but no instance has '$($Project.PbipPath)' open.")
+    if ($untitled.Count -gt 0) {
+        $null = $sb.AppendLine("Desktop window title is '$($untitled[0])' - the project never opened.")
+    }
+    if ($titles.Count -gt 0) {
+        $null = $sb.AppendLine("Open windows: $($titles -join ' | ')")
+    }
+    $null = $sb.AppendLine("")
+    $null = $sb.AppendLine("Desktop is almost certainly showing an 'Issues were found' dialog naming the offending object. The bridge cannot read that dialog - it is WPF UI with no API surface, and during a failed load there is no report to serve the API.")
+    $null = $sb.AppendLine("")
+    $null = $sb.AppendLine("ACTION:")
+    $null = $sb.AppendLine("  1. Run: powershell -NoProfile -File scripts\Test-PbipSemantics.ps1")
+    $null = $sb.AppendLine("     It checks the source for exactly this class of load error (name collisions,")
+    $null = $sb.AppendLine("     unresolved references, unregistered resources, duplicate page ids).")
+    $null = $sb.AppendLine("  2. If that comes back clean, read the dialog on screen (Copy details to clipboard).")
+    $null = $sb.AppendLine("  3. Fix the PBIR/TMDL source, close the Untitled window, then reopen:")
+    $null = $sb.AppendLine("     powerbi-desktop open `"$($Project.PbipPath)`"")
+    $null = $sb.AppendLine("")
+    $null = $sb.AppendLine("Do NOT choose 'continue with errors'. It opens the report with the failing objects dropped, so every screenshot after it shows a report that does not exist in source.")
+
+    return [PSCustomObject]@{
+        Ok = $false; Pid = $null; Status = "load_failed"; Reason = $sb.ToString().TrimEnd()
+        ElapsedSeconds = $elapsed
+    }
+}
+
 function Get-PbipDefinitionHash {
     <#
       Content fingerprint of everything that affects rendering.

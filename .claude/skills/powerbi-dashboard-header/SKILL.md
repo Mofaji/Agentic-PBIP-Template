@@ -1,6 +1,22 @@
+---
+name: powerbi-dashboard-header
+description: 'Standardizes the header band and page chrome across dashboard pages - canvas background template, logo/divider/title/slicer/action-button layout, visual title styling, and the left-gap and top-gap adjustments that follow from moving filters into the header. Use when building or restyling a dashboard page header, aligning pages to the reference page, repositioning filters into the top navigation, or applying consistent visual titles and backgrounds across a report.'
+---
+
 # Dashboard Page Design Standardization Guide
 
 This document outlines the standard frontend design requirements for all dashboard pages based on the "final boss" reference page (`07f2c11fecd49dd91c92`). 
+
+## Repository Final Boss Alignment
+
+`copilot-instructions.md` is the final authority. This guide describes a client reference layout and **conflicts with it in one place**: section 3 below turns visual container titles on, while `copilot-instructions.md` rule 10 forbids them because titles are drawn on the SVG canvas background.
+
+Resolve it per project, explicitly:
+
+- **SVG-canvas projects (this template's default):** rule 10 wins - no visual container titles, no visual background. Use this file for the header band only (sections 1 and 2).
+- **Projects that follow the reference page:** apply section 3 as written, and record the exception in the project's spec under `specs/`.
+
+Never mix the two on one page.
 
 ## 1. Canvas Background
 All pages must use the standard background template.

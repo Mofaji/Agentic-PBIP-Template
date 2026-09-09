@@ -57,8 +57,9 @@ ProjectName.SemanticModel/
 
 # Dashboard Creation Steps
 
+0. **Write a spec** – For a new dashboard, page, or fact table, copy `specs/TEMPLATE.md` to `specs/<name>.md` and fill it in before building. Decisions about measures, page grid, and field bindings are cheap to change in a spec and expensive to change in generated PBIR JSON. Once the page renders clean, fold any rule that will apply to the *next* dashboard back into this file. See `specs/README.md`.
 1. **Understand data** – Read `.SemanticModel` folder for tables, columns, relationships, measures.
-2. **Create measures** – Default: place business measures in `_Measures` (create `_Measures = BLANK{}` if needed). Legacy-safe mode: if an existing working report already references measures in source tables (for example `Fact-MaterialMaster` / `Dim-Sales`), keep those measure home tables unless you migrate all visual references in the same change set.
+2. **Create measures** – Give every measure a `///` description line; the model is context for the next agent and for Copilot. Default: place business measures in `_Measures` (create `_Measures = BLANK{}` if needed). Legacy-safe mode: if an existing working report already references measures in source tables (for example `Fact-MaterialMaster` / `Dim-Sales`), keep those measure home tables unless you migrate all visual references in the same change set.
 3. **Create theme** – Save `<ThemeName>.json` in `RegisteredResources/`, reference in `report.json`.
 4. **Create SVG canvas backgrounds** – One per page, no visualizations, just layout/headers/cards/navigation. Save in `RegisteredResources/`.
 5. **Create SVG KPI measures** – In `_SVG_Measures` table (separate from `_Measures`). Naming: `P1_Sales_KPI_SVG`, `P2_Profit_KPI_SVG`, etc.
@@ -91,7 +92,9 @@ Confirm everything at once with `powershell -NoProfile -File scripts\Test-PbipBr
 
 ## How it runs
 
-A `Stop` hook in `.claude/settings.json` fires when the agent tries to end its turn. If the report or model definition changed, it runs `scripts/Invoke-PbipVerify.ps1` and blocks the turn until the rendered pages have been reviewed against `skills/powerbi-visual-verify/SKILL.md`.
+Four hooks in `.claude/settings.json` back these rules with automation rather than prose. `SessionStart` (`pbip-session-brief.ps1`) injects the guardrails and the live bridge status; `PreToolUse` (`pbip-write-guard.ps1`) blocks writes to `Proposals/`, `**/.pbi/`, `tests/screenshots/` and `.claude/.pbip-state/`; `PostToolUse` (`pbip-validate-hook.ps1`) parses every PBIP JSON written, rejects TMDL with a BOM or `//` comments, and catches file-local semantic errors such as a measure colliding with a column name. All fail open.
+
+A `Stop` hook in `.claude/settings.json` fires when the agent tries to end its turn. If the report or model definition changed, it runs `scripts/Invoke-PbipVerify.ps1` and blocks the turn until the rendered pages have been reviewed against `.claude/skills/powerbi-visual-verify/SKILL.md`.
 
 - **Fix budget: one round.** At most two blocks — review + fix, then confirm + report.
 - **Change detection is by content hash**, not by tool call, because this repo writes PBIP files from Python build scripts. Nothing changed means Power BI is never touched.
@@ -103,7 +106,10 @@ Manual run: `powershell -NoProfile -File scripts\Invoke-PbipVerify.ps1 -Mode Rev
 
 - **Theme cache** — Desktop caches theme JSON. After editing a theme in `RegisteredResources/`, reload shows **stale colors**. Rename the theme file with a new suffix and update its `report.json` registration, or close and reopen Desktop.
 - **TMDL** — `reload` re-applies the model definition by default, but when a visual shows stale or missing measure values, reopen instead: `powerbi-desktop open "<project>.pbip"`. Relevant on every build that rewrites `_SVG_Measures.tmdl`.
+- **First open of a freshly generated report** — Desktop often refuses to load a first-build PBIP and raises an error dialog, sometimes offering *continue with errors*. If the window title stays **Untitled** (`powerbi-desktop status` shows the pid with no `currentFilePath`), the project never opened and every bridge call fails; an open modal blocks the bridge until dismissed. *Continue with errors* opens the report with the failing visuals or model objects dropped, so the screenshots show something that is not in source. Read the dialog detail, fix the cause (measure missing from TMDL, resource item not registered in `report.json`, `visual.json` property not in the declared schema version, UTF-8 BOM), then `powerbi-desktop open "<project>.pbip"` and confirm `status` shows the project path before verifying.
 - **Wrong instance** — an idle *Untitled* Desktop window reports `connected` but fails every operation with `REPORT_DIR_REQUIRED`. The scripts match the PID by `currentFilePath`.
+- **The bridge cannot read Desktop's error dialogs** — during a failed load there is no report to serve the API. Two things cover it instead: `scripts\Test-PbipSemantics.ps1` finds that class of error in the source before Desktop is launched (name collisions, unresolved references, unregistered resources, duplicate page ids), and `scripts\Get-PbipLoadError.ps1` reads the dialog through UI Automation when one is up — text, the "Copy details to clipboard" diagnostic naming the offending file and line, plus a cropped PNG. The verify loop runs the first before touching Desktop and the second on `load_failed`, waits up to 30s for a load, and treats `load_failed` as a blocking defect rather than a skip.
+- **Recovery from a load failure is automatic, and ordered** — capture the dialog, dismiss it, close the spent instance, then reopen. The order matters because `powerbi-desktop open` starts a new instance rather than reusing the running one, so the failed window must be gone first. The reopen is net-zero on failure (the instance count returns to its starting value) and only ever closes an instance it started or one that was showing a load-error dialog.
 - **One operation at a time** — never reload and screenshot concurrently against the same PID; the result is a `Cancelled` error.
 
 ---

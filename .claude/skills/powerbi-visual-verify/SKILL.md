@@ -90,6 +90,60 @@ Screenshots include the right-hand filter pane (`outspacePane`). Its presence is
 
 These produce screenshots that lie. Check them before concluding a fix failed.
 
+**First open of a freshly generated report.** On the first dashboard the agent builds, Power BI Desktop often fails to load the PBIP cleanly and raises an error dialog - sometimes one offering *continue with errors*. Two symptoms, one cause:
+
+- The window title stays **Untitled** and `powerbi-desktop status` lists the pid with no `currentFilePath`. The project never opened, so the scripts correctly report *"No running Power BI Desktop instance has ... open"*. That message means a load error, not a broken bridge.
+- A modal dialog is up. **The bridge cannot work behind a modal** - every reload and screenshot hangs or fails until it is dismissed.
+
+*Continue with errors* is not a fix. Desktop opens the report with the failing visuals or model objects dropped, so the screenshots show a report that does not exist in source.
+
+**The bridge cannot see that dialog** - during a failed load there is no report to serve the API. Two things cover it. First, find the cause in the source:
+
+```powershell
+powershell -NoProfile -File scripts\Test-PbipSemantics.ps1
+```
+
+That checks for exactly this class of error: a measure colliding with a column name, duplicate measure names, relationship endpoints that do not exist, unresolved `'Table'[Column]` references, resource items referenced but not registered in `report.json`, duplicate page ids.
+
+Second, when it comes back clean - a TMDL grammar fault, say - read the dialog itself:
+
+```powershell
+powershell -NoProfile -File scripts\Get-PbipLoadError.ps1
+```
+
+It returns the on-screen text, the full diagnostic behind **Copy details to clipboard** (which names the offending file and line number), and a cropped PNG of the dialog. The verify loop runs this automatically on `load_failed`, so a blocked turn usually already carries the message.
+
+After a fix the loop reopens and retries on its own — capture, dismiss, close the spent instance, reopen. The order is what makes it safe: `powerbi-desktop open` starts a *new* instance rather than reusing the running one, so the failed window has to be gone first. If the reopen fails, the instance count returns to where it started, and only an instance the loop started, or one that was showing a load-error dialog, is ever closed.
+
+The verify loop now waits up to **30 seconds** after an open before giving up, and says which of four things happened rather than reporting one undifferentiated skip:
+
+| Status | Meaning |
+| --- | --- |
+| `loaded` | Instance found; verification proceeds |
+| `not_running` | Desktop is closed. Skip. |
+| `no_bridge` | Desktop up, preview flag off. Skip. |
+| `other_project` | Desktop has a *different* project open - it names which. Skip. |
+| `load_failed` | Desktop up, bridge up, project still not loaded: a rejected definition. **Blocks the turn** - this is a defect, not an outage. |
+
+Usual first-build causes:
+
+- a visual references a measure that is not in the TMDL, or one that lives in a different home table
+- a page background or theme names a resource item that is not registered in `report.json`
+- a `visual.json` property does not match the schema version declared at the top of that file
+- files written UTF-8 **with** BOM, or a stray trailing comma in JSON
+- duplicate page or visual ids in `pages.json`
+
+Recovery:
+
+```powershell
+powershell -NoProfile -File scripts\Test-PbipBridge.ps1   # expect: no instance has this project open
+# dismiss the dialog, close the Untitled window, fix the PBIR/TMDL, then:
+powerbi-desktop open "<project>.pbip"
+powerbi-desktop status                                    # currentFilePath must show the project
+```
+
+Only run the verify loop once `status` reports the project path.
+
 **Theme cache.** Power BI Desktop caches theme JSON. After editing a theme in `StaticResources/RegisteredResources/`, a reload shows **stale colors**. Rename the theme file with a new suffix and update its `report.json` registration, or close and reopen Desktop. The verify script warns when it sees a recently modified theme file.
 
 **Semantic model / TMDL.** `file.reload/v1` takes `reloadModelDefinition` (default `true`), so measure changes usually do apply. When a visual still shows stale or missing measure values, reopen rather than reload:

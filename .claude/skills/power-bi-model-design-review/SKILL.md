@@ -1,6 +1,6 @@
 ---
 name: power-bi-model-design-review
-description: 'Comprehensive Power BI data model design review prompt for evaluating model architecture, relationships, and optimization opportunities.'
+description: 'Reviews an existing Power BI semantic model against star-schema, relationship, and optimization best practice, and reports what to change. Use when asked to review, audit, critique, or health-check a model, when inheriting an unfamiliar semantic model, before a production release, or when someone asks whether the model design is sound. Triggers on queries about model review, schema audit, relationship design problems, snowflake vs star, bidirectional filters, unused columns, and model optimization opportunities.'
 ---
 
 # Power BI Data Model Design Review
