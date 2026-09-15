@@ -1,0 +1,33 @@
+// Shared base styles for every custom visual in the repo.
+// Mirrors shared/tokens.ts - change both together.
+// Imported by each visual's style/visual.less as "../../shared/base.less".
+
+@font: "Segoe UI", wf_standard-font, -apple-system, BlinkMacSystemFont, sans-serif;
+@ink: #1F2328;
+@ink-soft: #5B6168;
+@muted: #8C9197;
+@grid: #ECEEF1;
+@divider: #E3E6EA;
+@strong: #1F2328;
+@band: #F7F8FA;
+@row-hover: #F4F6F8;
+@ac: #404448;
+@accent: #3A7BD5;
+
+html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: @font;
+    -webkit-font-smoothing: antialiased;
+}
+
+.cv-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: @muted;
+    font-size: 11px;
+}

@@ -1,0 +1,77 @@
+{
+  "dataRoles": [
+    { "displayName": "Rows (hierarchy, outer to inner)", "name": "rows", "kind": "Grouping" },
+    { "displayName": "Row order (one index per level)", "name": "rowOrder", "kind": "Grouping",
+      "description": "Optional index columns, in the same order as Rows. Rows sort by these instead of alphabetically." },
+    { "displayName": "Period (cross-tab columns)", "name": "period", "kind": "Grouping",
+      "description": "Optional. When bound the table shows one column per period plus a total." },
+    { "displayName": "Actual (AC)", "name": "ac", "kind": "Measure" },
+    { "displayName": "Comparison (PM)", "name": "pm", "kind": "Measure" }
+  ],
+  "dataViewMappings": [
+    {
+      "conditions": [
+        { "rows": { "min": 1, "max": 3 }, "rowOrder": { "max": 3 }, "period": { "max": 1 }, "ac": { "max": 1 }, "pm": { "max": 1 } }
+      ],
+      "table": {
+        "rows": {
+          "select": [
+            { "for": { "in": "rows" } },
+            { "for": { "in": "rowOrder" } },
+            { "for": { "in": "period" } },
+            { "for": { "in": "ac" } },
+            { "for": { "in": "pm" } }
+          ],
+          "dataReductionAlgorithm": { "window": { "count": 30000 } }
+        }
+      }
+    }
+  ],
+  "objects": {
+    "statement": {
+      "displayName": "Statement",
+      "properties": {
+        "groupTotal": {
+          "displayName": "Group totals",
+          "type": { "enumeration": [
+            { "value": "sum", "displayName": "Sum of children" },
+            { "value": "running", "displayName": "Running result (P&L)" }
+          ] }
+        },
+        "showRatios": { "displayName": "Ratio rows (% of first group)", "type": { "bool": true } },
+        "ratioSuffix": { "displayName": "Ratio row suffix", "type": { "text": true } },
+        "collapsed": { "displayName": "Collapsed groups (pipe separated)", "type": { "text": true } },
+        "hideEmpty": { "displayName": "Hide empty rows", "type": { "bool": true } }
+      }
+    },
+    "display": {
+      "displayName": "Display",
+      "properties": {
+        "unit": {
+          "displayName": "Unit",
+          "type": { "enumeration": [
+            { "value": "K", "displayName": "Thousands" },
+            { "value": "M", "displayName": "Millions" },
+            { "value": "none", "displayName": "None" }
+          ] }
+        },
+        "fontSize": { "displayName": "Text size", "type": { "formatting": { "fontSize": true } } },
+        "rowHeight": { "displayName": "Row height", "type": { "numeric": true } },
+        "acLabel": { "displayName": "Actual label", "type": { "text": true } },
+        "pmLabel": { "displayName": "Comparison label", "type": { "text": true } },
+        "showTotalColumn": { "displayName": "Total column (cross-tab)", "type": { "bool": true } }
+      }
+    },
+    "colors": {
+      "displayName": "Colours",
+      "properties": {
+        "positive": { "displayName": "Positive variance", "type": { "fill": { "solid": { "color": true } } } },
+        "negative": { "displayName": "Negative variance", "type": { "fill": { "solid": { "color": true } } } },
+        "accent": { "displayName": "Accent", "type": { "fill": { "solid": { "color": true } } } }
+      }
+    }
+  },
+  "supportsHighlight": false,
+  "supportsMultiVisualSelection": true,
+  "privileges": []
+}

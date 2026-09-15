@@ -144,6 +144,15 @@ powerbi-desktop status                                    # currentFilePath must
 
 Only run the verify loop once `status` reports the project path.
 
+**Reload-time dialog: "Your report has issues that could not be resolved".** A PBIR schema fault, most often a malformed expression in `filterConfig`. Measured facts that matter when you review:
+
+- `powerbi-desktop reload` returns `"success": true` even when this dialog appears, which is why the loop watches the window for a modal rather than trusting the exit code.
+- The list is noise around one defect. A single unrecognised expression key yields one *"Required property"* line per expression kind the schema accepts - 49 lines - plus one *"An additional property 'X' was included"* line naming the actual key. The loop reports the collapsed root cause.
+- **Continue silently drops whatever failed validation.** A broken visual filter simply stops filtering; the page renders and looks normal. Screenshots from a `loaded_with_issues` round are marked **UNTRUSTED** - use them only to see what went missing, never to judge the page correct.
+- Continue writes nothing to disk, but the instance is closed afterwards so the degraded report can't be edited and saved over the source.
+
+To catch it earlier: `Test-PbipSemantics.ps1` checks filter expressions locally and names the intended key. `powerbi-report-author validate --no-schema` reports success on this class.
+
 **Theme cache.** Power BI Desktop caches theme JSON. After editing a theme in `StaticResources/RegisteredResources/`, a reload shows **stale colors**. Rename the theme file with a new suffix and update its `report.json` registration, or close and reopen Desktop. The verify script warns when it sees a recently modified theme file.
 
 **Semantic model / TMDL.** `file.reload/v1` takes `reloadModelDefinition` (default `true`), so measure changes usually do apply. When a visual still shows stale or missing measure values, reopen rather than reload:

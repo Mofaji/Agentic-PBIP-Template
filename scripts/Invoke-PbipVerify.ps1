@@ -22,6 +22,7 @@ param(
     [int]$SettleMs = 400,
     [int]$LoadTimeoutSeconds = 30,
     [switch]$NoReopen,
+    [switch]$SkipValidation,
     [switch]$TmdlChanged
 )
 
@@ -39,17 +40,34 @@ function Get-PbipDialogReport {
     param(
         [Parameter(Mandatory = $true)]$Project,
         [string]$OutputDir,
-        [switch]$Dismiss
+        [switch]$Dismiss,
+        [ValidateSet("None", "Dismiss", "Continue", "CloseDesktop")][string]$Action = "None",
+        [int]$ProcessId = 0,
+        [switch]$SkipCapture
     )
 
-    $out = [PSCustomObject]@{ Report = $null; Found = $false; Dismissed = $false; Pid = $null }
+    $out = [PSCustomObject]@{
+        Report = $null; Found = $false; Dismissed = $false; Pid = $null
+        Kind = $null; RootCauses = @(); IssueCount = 0; ActionTaken = $null
+        ScreenshotPath = $null; DetailsPath = $null
+    }
 
     try {
         $script = Join-Path $PSScriptRoot "Get-PbipLoadError.ps1"
         if (-not (Test-Path -LiteralPath $script)) { return $out }
 
-        $cliArgs = @("-Json")
-        if ($Dismiss) { $cliArgs += "-Dismiss" }
+        $act = $Action
+        if ($Dismiss -and $act -eq "None") { $act = "Dismiss" }
+
+        $cliArgs = @("-Json", "-Action", $act)
+        if ($ProcessId -gt 0) {
+            $cliArgs += @("-ProcessId", "$ProcessId")
+        } else {
+            # No specific instance: never search one holding a different project.
+            $foreign = @(Get-PbiForeignInstancePids -Project $Project)
+            if ($foreign.Count -gt 0) { $cliArgs += @("-ExcludeProcessId", ($foreign -join ",")) }
+        }
+        if ($SkipCapture) { $cliArgs += "-SkipCapture" }
         if ($OutputDir) { $cliArgs += @("-OutputDir", $OutputDir) }
 
         $res = Invoke-PsScript -ScriptPath $script -ScriptArgs $cliArgs -TimeoutSeconds 90
@@ -61,16 +79,27 @@ function Get-PbipDialogReport {
         $out.Found = $true
         $out.Dismissed = [bool]$d.Dismissed
         if ($d.Pid) { $out.Pid = [int]$d.Pid }
+        $out.Kind = $d.Kind
+        $out.ActionTaken = $d.ActionTaken
+        $out.ScreenshotPath = $d.ScreenshotPath
+        $out.DetailsPath = $d.DetailsPath
+        if ($d.RootCauses) { $out.RootCauses = @($d.RootCauses) }
+        if ($d.IssueCount) { $out.IssueCount = [int]$d.IssueCount }
+        if ($SkipCapture) { return $out }
 
         $sb = New-Object System.Text.StringBuilder
         $null = $sb.AppendLine("POWER BI DESKTOP REJECTED THE PROJECT - dialog captured")
         $null = $sb.AppendLine("")
         if ($d.Heading) { $null = $sb.AppendLine("Dialog: $($d.Heading)") }
-        if ($d.Text) {
+        if ($out.RootCauses.Count -gt 0) {
+            $null = $sb.AppendLine("")
+            $null = $sb.AppendLine("Root cause(s) - $($out.IssueCount) dialog issue(s) collapsed to $($out.RootCauses.Count):")
+            foreach ($rc in $out.RootCauses) { $null = $sb.AppendLine("  - $rc") }
+        } elseif ($d.Text) {
             $null = $sb.AppendLine("")
             $null = $sb.AppendLine($d.Text)
         }
-        if ($d.ErrorMessage -and $d.ErrorMessage -ne $d.Text) {
+        if ($out.RootCauses.Count -eq 0 -and $d.ErrorMessage -and $d.ErrorMessage -ne $d.Text) {
             $null = $sb.AppendLine("")
             $null = $sb.AppendLine("From 'Copy details to clipboard':")
             $null = $sb.AppendLine($d.ErrorMessage)
@@ -90,6 +119,84 @@ function Get-PbipDialogReport {
     }
 }
 
+function Format-PbirValidationFailure {
+    <#
+      Turns a failed powerbi-report-author run into something an agent can act on.
+
+      The validator reports a single malformed expression as one "must have required
+      property" error per expression kind the schema accepts - 49 errors, each with a
+      full absolute path, for one typo'd key. Passed through raw, that is tens of
+      kilobytes in which the actual defect is buried. So: lead with the root causes
+      from the semantic checks (which name the bad key and suggest the right one),
+      then summarise the validator's errors by file and JSON pointer.
+    #>
+    param([Parameter(Mandatory = $true)]$Project, [Parameter(Mandatory = $true)]$Validation)
+
+    $sb = New-Object System.Text.StringBuilder
+    $null = $sb.AppendLine("PBIR validation failed ($($Validation.ErrorCount) error(s)) - Desktop was NOT reloaded.")
+
+    $rootCauses = @()
+    try {
+        . (Join-Path $PSScriptRoot "Test-PbipSemantics.ps1")
+        $sem = Test-PbipSemantics -Project $Project
+        $rootCauses = @($sem.Errors)
+    } catch { }
+
+    if ($rootCauses.Count -gt 0) {
+        $null = $sb.AppendLine("")
+        $null = $sb.AppendLine("Root cause(s):")
+        foreach ($rc in $rootCauses) { $null = $sb.AppendLine("  - $rc") }
+    }
+
+    $groups = [ordered]@{}
+    $parsed = $false
+    try {
+        $j = $Validation.Detail | ConvertFrom-Json -ErrorAction Stop
+        $diag = $j.data.diagnostics
+        $reportDir = [System.IO.Path]::GetFullPath($Project.ReportDir).TrimEnd('\')
+        foreach ($code in @($diag.PSObject.Properties.Name)) {
+            foreach ($item in @($diag.$code.items)) {
+                $file = [string]$item.file
+                try {
+                    $full = [System.IO.Path]::GetFullPath($file)
+                    if ($full.StartsWith($reportDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $file = $full.Substring($reportDir.Length).TrimStart('\').Replace('\', '/')
+                    }
+                } catch { }
+                $key = "$code|$file|$($item.path)"
+                if (-not $groups.Contains($key)) {
+                    $groups[$key] = [PSCustomObject]@{ Code = $code; File = $file; Path = [string]$item.path; Count = 0; First = [string]$item.message }
+                }
+                $groups[$key].Count++
+            }
+        }
+        $parsed = $true
+    } catch { }
+
+    $null = $sb.AppendLine("")
+    if ($parsed -and $groups.Count -gt 0) {
+        $null = $sb.AppendLine("Validator errors by location:")
+        foreach ($g in $groups.Values) {
+            $first = $g.First
+            $colon = $first.LastIndexOf(': ')
+            if ($colon -gt 0) { $first = $first.Substring(0, $colon) }
+            if ($first.Length -gt 160) { $first = $first.Substring(0, 160) + "..." }
+            $null = $sb.AppendLine("  - [$($g.Code)] $($g.File) $($g.Path) - $($g.Count) error(s), e.g. $first")
+        }
+        if ($rootCauses.Count -gt 0) {
+            $null = $sb.AppendLine("")
+            $null = $sb.AppendLine("Many errors at a single pointer almost always mean ONE malformed expression: the")
+            $null = $sb.AppendLine("schema lists every expression kind it would have accepted. Fix the root cause first.")
+        }
+    } else {
+        $detail = [string]$Validation.Detail
+        if ($detail.Length -gt 2000) { $detail = $detail.Substring(0, 2000) + " ... (truncated)" }
+        $null = $sb.AppendLine($detail)
+    }
+
+    return $sb.ToString().TrimEnd()
+}
+
 function Invoke-PbipVerify {
     [CmdletBinding()]
     param(
@@ -100,6 +207,7 @@ function Invoke-PbipVerify {
         [int]$SettleMs = 400,
         [int]$LoadTimeoutSeconds = 30,
         [switch]$NoReopen,
+        [switch]$SkipValidation,
         [switch]$TmdlChanged
     )
 
@@ -122,7 +230,14 @@ function Invoke-PbipVerify {
     # --- 2. Validate BEFORE touching Desktop ------------------------------------
     # Invalid PBIR is rejected by reload anyway; failing here saves a Desktop cycle
     # and gives a far better error than the bridge does.
-    $val = Test-PbirValid -Project $project
+    # -SkipValidation exists to reproduce Desktop-side failures on purpose: it lets a
+    # definition these gates would reject reach Desktop, so the dialog handling in
+    # step 4b can be exercised. Never pass it from the Stop hook.
+    if ($SkipValidation) {
+        $warnings.Add("Validation was skipped (-SkipValidation). This run exists to reproduce a Desktop-side failure; do not treat its outcome as verification.")
+    }
+    $val = [PSCustomObject]@{ Ok = $true; NotInstalled = $false; ErrorCount = 0; Detail = "" }
+    if (-not $SkipValidation) { $val = Test-PbirValid -Project $project }
     if ($val.NotInstalled) {
         return [PSCustomObject]@{
             Status = "bridge_unavailable"; Ok = $false; Message = $val.Detail
@@ -132,7 +247,7 @@ function Invoke-PbipVerify {
     if (-not $val.Ok) {
         return [PSCustomObject]@{
             Status = "validation_failed"; Ok = $false
-            Message = "PBIR validation failed ($($val.ErrorCount) error(s)) - Desktop was NOT reloaded.`n$($val.Detail)"
+            Message = (Format-PbirValidationFailure -Project $project -Validation $val)
             Screenshots = @(); Warnings = @(); OutputDir = $OutputDir; Pid = $null
         }
     }
@@ -147,6 +262,7 @@ function Invoke-PbipVerify {
     # its own param block, and dot-sourcing it at the top would clobber this
     # script's $RepoRoot with $null before the bottom-of-file call reads it. By this
     # point $RepoRoot has already been consumed by Get-PbipProject above.
+    if (-not $SkipValidation) {
     try {
         . (Join-Path $PSScriptRoot "Test-PbipSemantics.ps1")
         $sem = Test-PbipSemantics -Project $project
@@ -154,7 +270,7 @@ function Invoke-PbipVerify {
             $detail = ($sem.Errors | ForEach-Object { "  - $_" }) -join "`n"
             return [PSCustomObject]@{
                 Status = "validation_failed"; Ok = $false
-                Message = "Semantic validation failed ($($sem.Errors.Count) error(s)) - Desktop was NOT reloaded.`nThese are the failures Power BI Desktop reports as an 'Issues were found' dialog at load time:`n$detail"
+                Message = "Semantic validation failed ($($sem.Errors.Count) error(s)) - Desktop was NOT reloaded.`nThese are the failures Power BI Desktop reports as a dialog on load or reload:`n$detail"
                 Screenshots = @(); Warnings = @(); OutputDir = $OutputDir; Pid = $null
             }
         }
@@ -162,6 +278,7 @@ function Invoke-PbipVerify {
     } catch {
         # Never let the semantic gate itself break the loop.
         $warnings.Add("Semantic validation could not run: $($_.Exception.Message)")
+    }
     }
 
     # --- 3. Find the instance holding THIS project ------------------------------
@@ -246,7 +363,55 @@ function Invoke-PbipVerify {
 
     # --- 4. Reload (serial) ------------------------------------------------------
     $reload = Invoke-BridgeCli -Exe "powerbi-desktop" -CliArgs @("reload", "--pid", "$targetPid", "--wait-seconds", "90") -TimeoutSeconds 180
-    if ($reload.ExitCode -ne 0) {
+
+    # --- 4b. Do not trust the reload's exit code --------------------------------
+    # "reload" returns exit 0 and "success": true even when Desktop rejects the
+    # reloaded definition and raises a dialog. The real signal is the window: a
+    # modal disables it.
+    #
+    #   report_issues     "Your report has issues that could not be resolved".
+    #                     Capture it, press Continue (again if it re-raises), take
+    #                     the screenshots anyway and mark them UNTRUSTED - Continue
+    #                     silently drops whatever failed validation, so a broken
+    #                     filter stops filtering and the page still looks normal.
+    #                     The instance is closed afterwards so that degraded report
+    #                     cannot be edited and saved over the source.
+    #   definition_error  "Issues were found". Nothing loaded; handled like
+    #                     load_failed - capture, close, and the next round reopens.
+    $issuesDialog = $null
+    if (Wait-PbiShellBlocked -ProcessId $targetPid -Seconds 6) {
+        $dlg = Get-PbipDialogReport -Project $project -OutputDir $OutputDir -ProcessId $targetPid -Action None
+
+        if ($dlg.Found -and $dlg.Kind -eq "report_issues") {
+            $issuesDialog = $dlg
+            for ($press = 0; $press -lt 3; $press++) {
+                $c = Get-PbipDialogReport -Project $project -ProcessId $targetPid -Action Continue -SkipCapture
+                if (-not $c.Found) { break }
+                Start-Sleep -Seconds 3
+                if (-not (Test-PbiShellBlocked -ProcessId $targetPid)) { break }
+            }
+        } elseif ($dlg.Found) {
+            $info = Get-PbiInstanceInfo -ProcessId $targetPid
+            $closed = $false
+            if ($info.HasUnsavedChanges -ne $true) {
+                $null = Get-PbipDialogReport -Project $project -ProcessId $targetPid -Action Dismiss -SkipCapture
+                $closed = Close-PbipInstance -ProcessId $targetPid
+            }
+            $tail = "The reload was rejected. The instance was closed; after fixing the source, the next round reopens the project on its own."
+            if (-not $closed) {
+                $tail = "The reload was rejected. The instance was NOT closed because Desktop reports unsaved changes in it - close it yourself, then the next round reopens the project."
+            }
+            return [PSCustomObject]@{
+                Status = "load_failed"; Ok = $false
+                Message = ($dlg.Report + "`n`n" + $tail)
+                Screenshots = @(); Warnings = @($warnings); OutputDir = $OutputDir; Pid = $targetPid
+            }
+        } else {
+            $warnings.Add("Power BI Desktop's window was blocked by a modal after reload, but no error dialog was recognised. Screenshots may not reflect the reloaded definition.")
+        }
+    }
+
+    if (-not $issuesDialog -and $reload.ExitCode -ne 0) {
         $detail = ($reload.Stdout + "`n" + $reload.Stderr).Trim()
         return [PSCustomObject]@{
             Status = "bridge_unavailable"; Ok = $false
@@ -273,7 +438,11 @@ function Invoke-PbipVerify {
         "--wait-seconds", "90"
     ) -TimeoutSeconds 300
 
-    if ($shot.ExitCode -ne 0) {
+    if ($shot.ExitCode -ne 0 -and $issuesDialog) {
+        # The issues are the finding; a missing screenshot must not demote them to a
+        # fail-open skip.
+        $warnings.Add("screenshot-all failed after pressing Continue, so there are no screenshots for this round: " + (($shot.Stdout + " " + $shot.Stderr).Trim()))
+    } elseif ($shot.ExitCode -ne 0) {
         $detail = ($shot.Stdout + "`n" + $shot.Stderr).Trim()
         return [PSCustomObject]@{
             Status = "bridge_unavailable"; Ok = $false
@@ -358,6 +527,35 @@ function Invoke-PbipVerify {
         }
     }
 
+    if ($issuesDialog) {
+        # Close the instance holding the degraded report, unless it has unsaved work.
+        $info = Get-PbiInstanceInfo -ProcessId $targetPid
+        $closed = $false
+        if ($info.HasUnsavedChanges -ne $true) {
+            if (Test-PbiShellBlocked -ProcessId $targetPid) {
+                $null = Get-PbipDialogReport -Project $project -ProcessId $targetPid -Action CloseDesktop -SkipCapture
+                $closed = Wait-ProcessExit -ProcessId $targetPid -TimeoutSeconds 20
+            }
+            if (-not $closed) { $closed = Close-PbipInstance -ProcessId $targetPid }
+        }
+
+        return [PSCustomObject]@{
+            Status         = "loaded_with_issues"
+            Ok             = $false
+            Mode           = $Mode
+            Message        = "Power BI Desktop reported $($issuesDialog.IssueCount) issue(s) in the report definition and loaded it only after Continue."
+            RootCauses     = @($issuesDialog.RootCauses)
+            DialogImage    = $issuesDialog.ScreenshotPath
+            DetailsPath    = $issuesDialog.DetailsPath
+            InstanceClosed = $closed
+            Screenshots    = @($shots | Sort-Object Ordinal)
+            Warnings       = @($warnings)
+            OutputDir      = $OutputDir
+            Pid            = $targetPid
+            Project        = $project
+        }
+    }
+
     return [PSCustomObject]@{
         Status      = "verified"
         Ok          = $true
@@ -389,6 +587,47 @@ function Format-PbipVerifyReport {
         $null = $sb.AppendLine($Result.Message)
         $null = $sb.AppendLine("")
         $null = $sb.AppendLine("No screenshots exist for this round - the project never opened.")
+        return $sb.ToString()
+    }
+
+    if ($Result.Status -eq "loaded_with_issues") {
+        $null = $sb.AppendLine("POWER BI DESKTOP REJECTED PART OF THE REPORT - SCREENSHOTS BELOW ARE UNTRUSTED")
+        $null = $sb.AppendLine("")
+        $null = $sb.AppendLine($Result.Message)
+        $null = $sb.AppendLine("")
+        $null = $sb.AppendLine("Root cause(s):")
+        foreach ($rc in $Result.RootCauses) { $null = $sb.AppendLine("  - $rc") }
+        $null = $sb.AppendLine("")
+        $null = $sb.AppendLine("Why the screenshots are untrusted: Continue loads the report with every object")
+        $null = $sb.AppendLine("that failed validation silently dropped. A broken filter simply stops filtering,")
+        $null = $sb.AppendLine("and the page still looks normal - so these images show a report that is NOT the")
+        $null = $sb.AppendLine("one in source. Use them only to see what went missing.")
+        $null = $sb.AppendLine("")
+        $null = $sb.AppendLine("Pages captured (UNTRUSTED):")
+        foreach ($s in $Result.Screenshots) {
+            if ($s.Path) {
+                $null = $sb.AppendLine(("  [UNTRUSTED] [{0}] {1}" -f $s.Ordinal, $s.DisplayName))
+                $null = $sb.AppendLine(("        {0}" -f $s.Path))
+            }
+        }
+        if ($Result.DialogImage) { $null = $sb.AppendLine(""); $null = $sb.AppendLine("Dialog image:     $($Result.DialogImage)") }
+        if ($Result.DetailsPath) { $null = $sb.AppendLine("Full issue list:  $($Result.DetailsPath)") }
+        $null = $sb.AppendLine("")
+        if ($Result.InstanceClosed) {
+            $null = $sb.AppendLine("The Desktop instance was closed so the degraded report cannot be edited and saved")
+            $null = $sb.AppendLine("over the source. The next round reopens the project after the fix.")
+        } else {
+            $null = $sb.AppendLine("The Desktop instance was NOT closed (it reports unsaved changes). Do not save it -")
+            $null = $sb.AppendLine("that would write the degraded report over the source. Close it without saving.")
+        }
+        if ($Result.Warnings.Count -gt 0) {
+            $null = $sb.AppendLine("")
+            $null = $sb.AppendLine("Warnings:")
+            foreach ($w in $Result.Warnings) { $null = $sb.AppendLine("  ! $w") }
+        }
+        $null = $sb.AppendLine("")
+        $null = $sb.AppendLine("ACTION: fix the root cause(s) above in the PBIR source, then end your turn.")
+        $null = $sb.AppendLine("Do not judge page correctness from these screenshots.")
         return $sb.ToString()
     }
 
@@ -443,7 +682,7 @@ function Format-PbipVerifyReport {
 
 # Auto-run only when executed directly, not when dot-sourced by the hook.
 if ($MyInvocation.InvocationName -ne '.') {
-    $result = Invoke-PbipVerify -Mode $Mode -OutputDir $OutputDir -RepoRoot $RepoRoot -Scale $Scale -SettleMs $SettleMs -LoadTimeoutSeconds $LoadTimeoutSeconds -NoReopen:$NoReopen -TmdlChanged:$TmdlChanged
+    $result = Invoke-PbipVerify -Mode $Mode -OutputDir $OutputDir -RepoRoot $RepoRoot -Scale $Scale -SettleMs $SettleMs -LoadTimeoutSeconds $LoadTimeoutSeconds -NoReopen:$NoReopen -SkipValidation:$SkipValidation -TmdlChanged:$TmdlChanged
     Write-Host (Format-PbipVerifyReport -Result $result -Mode $Mode)
     if ($result.Ok) { exit 0 } else { exit 1 }
 }

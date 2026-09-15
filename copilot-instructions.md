@@ -109,6 +109,7 @@ Manual run: `powershell -NoProfile -File scripts\Invoke-PbipVerify.ps1 -Mode Rev
 - **First open of a freshly generated report** — Desktop often refuses to load a first-build PBIP and raises an error dialog, sometimes offering *continue with errors*. If the window title stays **Untitled** (`powerbi-desktop status` shows the pid with no `currentFilePath`), the project never opened and every bridge call fails; an open modal blocks the bridge until dismissed. *Continue with errors* opens the report with the failing visuals or model objects dropped, so the screenshots show something that is not in source. Read the dialog detail, fix the cause (measure missing from TMDL, resource item not registered in `report.json`, `visual.json` property not in the declared schema version, UTF-8 BOM), then `powerbi-desktop open "<project>.pbip"` and confirm `status` shows the project path before verifying.
 - **Wrong instance** — an idle *Untitled* Desktop window reports `connected` but fails every operation with `REPORT_DIR_REQUIRED`. The scripts match the PID by `currentFilePath`.
 - **The bridge cannot read Desktop's error dialogs** — during a failed load there is no report to serve the API. Two things cover it instead: `scripts\Test-PbipSemantics.ps1` finds that class of error in the source before Desktop is launched (name collisions, unresolved references, unregistered resources, duplicate page ids), and `scripts\Get-PbipLoadError.ps1` reads the dialog through UI Automation when one is up — text, the "Copy details to clipboard" diagnostic naming the offending file and line, plus a cropped PNG. The verify loop runs the first before touching Desktop and the second on `load_failed`, waits up to 30s for a load, and treats `load_failed` as a blocking defect rather than a skip.
+- **"Your report has issues that could not be resolved"** — a reload-time PBIR schema fault, usually a malformed filter expression under `filterConfig`. Its list of ~49 issues is almost always one bad expression key: the schema enumerates every kind it would have accepted. `powerbi-desktop reload` returns success even when this dialog appears. The verify loop detects it, presses *Continue*, marks every screenshot **untrusted** (Continue silently drops the failing objects), closes the instance, and blocks. `Test-PbipSemantics.ps1` checks filter expressions locally and catches this class before reload; `powerbi-report-author validate --no-schema` does not.
 - **Recovery from a load failure is automatic, and ordered** — capture the dialog, dismiss it, close the spent instance, then reopen. The order matters because `powerbi-desktop open` starts a new instance rather than reusing the running one, so the failed window must be gone first. The reopen is net-zero on failure (the instance count returns to its starting value) and only ever closes an instance it started or one that was showing a load-error dialog.
 - **One operation at a time** — never reload and screenshot concurrently against the same PID; the result is a `Cancelled` error.
 
@@ -403,8 +404,8 @@ Always include `sortDefinition` inside `query` to sort by value descending:
       "queryState": {
         "Category": {
           "projections": [{
-            "field": { "Column": { "Expression": { "SourceRef": { "Entity": "CoffeeSales" } }, "Property": "Month" } },
-            "queryRef": "CoffeeSales.Month",
+            "field": { "Column": { "Expression": { "SourceRef": { "Entity": "Table" } }, "Property": "Month" } },
+            "queryRef": "Table.Month",
             "active": true
           }]
         },
@@ -486,8 +487,8 @@ Do NOT use `sortDefinition` on line charts (time axis must stay chronological). 
       "queryState": {
         "Category": {
           "projections": [{
-            "field": { "Column": { "Expression": { "SourceRef": { "Entity": "CoffeeSales" } }, "Property": "Category" } },
-            "queryRef": "CoffeeSales.Category",
+            "field": { "Column": { "Expression": { "SourceRef": { "Entity": "Table" } }, "Property": "Category" } },
+            "queryRef": "Table.Category",
             "active": true
           }]
         },
@@ -532,8 +533,8 @@ Do NOT use `sortDefinition` on line charts (time axis must stay chronological). 
         "Values": {
           "projections": [
             {
-              "field": { "Column": { "Expression": { "SourceRef": { "Entity": "CoffeeSales" } }, "Property": "Category" } },
-              "queryRef": "CoffeeSales.Category"
+              "field": { "Column": { "Expression": { "SourceRef": { "Entity": "Table" } }, "Property": "Category" } },
+              "queryRef": "Table.Category"
             },
             {
               "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "_Measures" } }, "Property": "Category Revenue" } },

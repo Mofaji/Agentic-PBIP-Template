@@ -1,0 +1,26 @@
+{
+  "visual": {
+    "name": "__NAME__",
+    "displayName": "__DISPLAY_NAME__",
+    "guid": "__GUID__",
+    "visualClassName": "Visual",
+    "version": "1.0.0.0",
+    "description": "__DESCRIPTION__",
+    "supportUrl": "__SUPPORT_URL__",
+    "gitHubUrl": ""
+  },
+  "apiVersion": "5.11.1",
+  "author": {
+    "name": "__AUTHOR_NAME__",
+    "email": "__AUTHOR_EMAIL__"
+  },
+  "assets": {
+    "icon": "assets/icon.png"
+  },
+  "externalJS": null,
+  "style": "style/visual.less",
+  "capabilities": "capabilities.json",
+  "dependencies": null,
+  "stringResources": [],
+  "version": "1.0.0.0"
+}

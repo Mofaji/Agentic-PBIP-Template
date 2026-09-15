@@ -1,0 +1,61 @@
+{
+  "dataRoles": [
+    { "displayName": "Period", "name": "category", "kind": "Grouping" },
+    { "displayName": "Value (AC)", "name": "measure", "kind": "Measure" }
+  ],
+  "dataViewMappings": [
+    {
+      "conditions": [ { "category": { "max": 1 }, "measure": { "max": 1 } } ],
+      "categorical": {
+        "categories": {
+          "for": { "in": "category" },
+          "dataReductionAlgorithm": { "top": { "count": 120 } }
+        },
+        "values": {
+          "select": [ { "bind": { "to": "measure" } } ]
+        }
+      }
+    }
+  ],
+  "objects": {
+    "chart": {
+      "displayName": "Chart",
+      "properties": {
+        "chartType": {
+          "displayName": "Type",
+          "type": { "enumeration": [
+            { "value": "column", "displayName": "Columns" },
+            { "value": "line", "displayName": "Line" },
+            { "value": "area", "displayName": "Area" }
+          ] }
+        },
+        "valueFormat": {
+          "displayName": "Value format",
+          "type": { "enumeration": [
+            { "value": "K", "displayName": "Thousands" },
+            { "value": "M", "displayName": "Millions" },
+            { "value": "none", "displayName": "Whole number" },
+            { "value": "pct", "displayName": "Percent" }
+          ] }
+        },
+        "showVariance": { "displayName": "Variance to previous", "type": { "bool": true } },
+        "showLabels": { "displayName": "Data labels", "type": { "bool": true } },
+        "hideEmpty": { "displayName": "Hide blank periods", "type": { "bool": true } },
+        "fontSize": { "displayName": "Text size", "type": { "formatting": { "fontSize": true } } },
+        "invertColors": { "displayName": "Invert variance colours", "type": { "bool": true } }
+      }
+    },
+    "colors": {
+      "displayName": "Colours",
+      "properties": {
+        "actual": { "displayName": "Actual", "type": { "fill": { "solid": { "color": true } } } },
+        "positive": { "displayName": "Positive variance", "type": { "fill": { "solid": { "color": true } } } },
+        "negative": { "displayName": "Negative variance", "type": { "fill": { "solid": { "color": true } } } },
+        "accent": { "displayName": "Line / area", "type": { "fill": { "solid": { "color": true } } } }
+      }
+    }
+  },
+  "supportsHighlight": true,
+  "supportsMultiVisualSelection": true,
+  "privileges": []
+}

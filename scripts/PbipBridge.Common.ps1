@@ -358,6 +358,86 @@ function Invoke-PsScript {
     }
 }
 
+function Test-PbiShellBlocked {
+    <#
+      True when this instance's main window is disabled - the signature of a modal
+      dialog. Cheap: one Children walk of the desktop plus a property read.
+
+      Needed because "powerbi-desktop reload" returns exit 0 with "success": true
+      even when Desktop rejects the reloaded definition and raises a dialog.
+    #>
+    param([int]$ProcessId)
+    try {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
+        $root = [System.Windows.Automation.AutomationElement]::RootElement
+        $kids = $root.FindAll([System.Windows.Automation.TreeScope]::Children,
+                              [System.Windows.Automation.Condition]::TrueCondition)
+        foreach ($w in $kids) {
+            try {
+                if ([int]$w.Current.ProcessId -ne $ProcessId) { continue }
+                if ([string]$w.Current.ClassName -notlike "WindowsForms10*") { continue }
+                return (-not [bool]$w.Current.IsEnabled)
+            } catch { }
+        }
+    } catch { }
+    return $false
+}
+
+function Wait-PbiShellBlocked {
+    # Polls for a modal to appear. The dialog lags the reload call by a few seconds.
+    param([int]$ProcessId, [int]$Seconds = 6)
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-PbiShellBlocked -ProcessId $ProcessId) { return $true }
+        Start-Sleep -Milliseconds 750
+    }
+    return (Test-PbiShellBlocked -ProcessId $ProcessId)
+}
+
+function Get-PbiInstanceInfo {
+    <#
+      The bridge's view of one instance: @{ Found; FilePath; HasUnsavedChanges }.
+      HasUnsavedChanges is read before closing anything - an instance with unsaved
+      edits is never closed automatically.
+    #>
+    param([int]$ProcessId)
+    $out = [PSCustomObject]@{ Found = $false; FilePath = $null; HasUnsavedChanges = $null }
+    try {
+        $res = Invoke-BridgeCli -Exe "powerbi-desktop" -CliArgs @("status") -TimeoutSeconds 30
+        if (-not $res.Json -or @($res.Json.PSObject.Properties.Name) -notcontains 'instances') { return $out }
+        foreach ($i in @($res.Json.instances)) {
+            if ([int]$i.pid -ne $ProcessId) { continue }
+            $out.Found = $true
+            $names = @($i.PSObject.Properties.Name)
+            if ($names -contains 'currentFilePath') { $out.FilePath = $i.currentFilePath }
+            if ($names -contains 'hasUnsavedChanges') { $out.HasUnsavedChanges = [bool]$i.hasUnsavedChanges }
+        }
+    } catch { }
+    return $out
+}
+
+function Get-PbiForeignInstancePids {
+    <#
+      Pids of instances the bridge reports holding a DIFFERENT file than this
+      project. Dialog searches must never touch those - they are someone's work.
+    #>
+    param([Parameter(Mandatory = $true)]$Project)
+    $foreign = @()
+    try {
+        $target = [System.IO.Path]::GetFullPath($Project.PbipPath)
+        $res = Invoke-BridgeCli -Exe "powerbi-desktop" -CliArgs @("status") -TimeoutSeconds 30
+        if ($res.Json -and @($res.Json.PSObject.Properties.Name) -contains 'instances') {
+            foreach ($i in @($res.Json.instances)) {
+                $fp = $null
+                if (@($i.PSObject.Properties.Name) -contains 'currentFilePath') { $fp = $i.currentFilePath }
+                if ([string]::IsNullOrWhiteSpace($fp)) { continue }
+                try { if ([System.IO.Path]::GetFullPath($fp) -ne $target) { $foreign += [int]$i.pid } } catch { }
+            }
+        }
+    } catch { }
+    return $foreign
+}
+
 function Wait-ProcessExit {
     param([int]$ProcessId, [int]$TimeoutSeconds = 20)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -392,6 +472,49 @@ function Close-PbipInstance {
     # It ignored the close request - a modal can swallow WM_CLOSE.
     try { $p.Kill() } catch { return $false }
     return (Wait-ProcessExit -ProcessId $ProcessId -TimeoutSeconds 5)
+}
+
+function Start-PbiDesktopDetached {
+    <#
+      Launches "powerbi-desktop open <pbip>" so that Power BI Desktop inherits NO
+      handles from this process.
+
+      This must not go through Invoke-BridgeCli. That runs the CLI as a redirected
+      child, and a redirected child inherits every inheritable handle - including
+      this process's own stdout. Desktop outlives the CLI and keeps that handle, so
+      whatever is reading this process's output never sees end-of-stream until
+      Desktop exits. Inside the Stop hook, that reader is the harness: the hook
+      would appear to hang until its timeout. Measured: a reopen that finished its
+      work in ~30s held its caller for 709s, released the instant Desktop closed.
+
+      Start-Process without redirection goes through ShellExecute, which does not
+      pass handles down.
+
+      Returns @{ Ok; Status; Reason }.
+    #>
+    param([Parameter(Mandatory = $true)][string]$PbipPath)
+
+    # The npm shim ships as .cmd and .ps1. Start-Process on a .ps1 opens it in an
+    # editor instead of running it, so prefer .cmd and wrap a .ps1 explicitly.
+    $cmd = Get-Command "powerbi-desktop.cmd" -ErrorAction SilentlyContinue
+    if (-not $cmd) { $cmd = Get-Command "powerbi-desktop" -ErrorAction SilentlyContinue }
+    if (-not $cmd) {
+        return [PSCustomObject]@{ Ok = $false; Status = "cli_missing"; Reason = "powerbi-desktop is not installed or not on PATH." }
+    }
+
+    $quotedPbip = '"' + $PbipPath + '"'
+    try {
+        if ([System.IO.Path]::GetExtension($cmd.Source) -ieq ".ps1") {
+            Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ErrorAction Stop `
+                -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $cmd.Source + '"'), "open", $quotedPbip)
+        } else {
+            Start-Process -FilePath $cmd.Source -WindowStyle Hidden -ErrorAction Stop `
+                -ArgumentList @("open", $quotedPbip)
+        }
+    } catch {
+        return [PSCustomObject]@{ Ok = $false; Status = "launch_failed"; Reason = "Could not start powerbi-desktop: $($_.Exception.Message)" }
+    }
+    return [PSCustomObject]@{ Ok = $true; Status = "launched"; Reason = $null }
 }
 
 function Invoke-PbipReopen {
@@ -433,10 +556,10 @@ function Invoke-PbipReopen {
 
     $before = @(Get-Process PBIDesktop -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 
-    $open = Invoke-BridgeCli -Exe "powerbi-desktop" -CliArgs @("open", $Project.PbipPath) -TimeoutSeconds 90
-    if ($open.ExitCode -eq 127) {
+    $launch = Start-PbiDesktopDetached -PbipPath $Project.PbipPath
+    if (-not $launch.Ok) {
         return [PSCustomObject]@{
-            Ok = $false; Pid = $null; Status = "cli_missing"; Reason = $open.Stderr; StartedPid = $null
+            Ok = $false; Pid = $null; Status = $launch.Status; Reason = $launch.Reason; StartedPid = $null
         }
     }
 

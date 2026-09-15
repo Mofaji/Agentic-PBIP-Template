@@ -42,6 +42,7 @@ The three digests exist because no harness auto-loads a file called `copilot-ins
   - `powerbi-fieldparameter/`: field-parameter page builder (table + bar chart, bookmarks, toggles)
   - `powerbi-dashboard-header/`: standard header band and page chrome
   - `powerbi-visual-verify/`: rendered-screenshot review checklist
+  - `powerbi-pbiviz-custom-visuals/`: scaffold, build, embed, and bind `.pbiviz` custom visuals (see [Custom Visuals](#custom-visuals-pbiviz))
 - `Template.pbip`: PBIP entry point
 - `Template.Report/`: report pages, visuals, theme references
 - `Template.SemanticModel/`: TMDL-based semantic model files
@@ -94,7 +95,7 @@ Hooks in this template (Claude Code; all fail open by design):
 | --- | --- | --- |
 | `SessionStart` | `pbip-session-brief.ps1` | Guardrails and live bridge status are in context before the first prompt |
 | `PreToolUse` | `pbip-write-guard.ps1` | No writes to `Proposals/`, `**/.pbi/`, `tests/screenshots/`, `.claude/.pbip-state/` |
-| `PostToolUse` | `pbip-validate-hook.ps1` | Every PBIP JSON written parses; TMDL carries no BOM, no `//` comments, and no measure/column name collision |
+| `PostToolUse` | `pbip-validate-hook.ps1` | Every PBIP JSON written parses and carries well-formed filter expressions; TMDL carries no BOM, no `//` comments, and no measure/column name collision |
 | `Stop` | `pbip-stop-hook.ps1` | The turn cannot end until rendered screenshots have been reviewed |
 
 The `PostToolUse` validator matters most on a first build: malformed JSON or a BOM'd TMDL is exactly what makes Power BI Desktop refuse to open the PBIP, and it catches that at the moment of writing rather than at the error dialog.
@@ -120,7 +121,7 @@ npm install -g @microsoft/powerbi-report-authoring-cli@latest    # powerbi-repor
 | --- | --- |
 | `scripts/Test-PbipBridge.ps1` | Preflight: version, bridge pipe, CLIs, matching instance, semantic + PBIR validity |
 | `scripts/Test-PbipSemantics.ps1` | The load-time errors Desktop reports as a dialog, found in source |
-| `scripts/Get-PbipLoadError.ps1` | Reads Desktop's load-error dialog when one appears — its text, its "Copy details to clipboard" content, and a cropped PNG |
+| `scripts/Get-PbipLoadError.ps1` | Reads Desktop's load and reload error dialogs — text, the "Copy details to clipboard" content collapsed to root causes, and a cropped PNG — and can answer them (Dismiss, Continue, Close Desktop) |
 | `scripts/Invoke-PbipVerify.ps1` | The loop: validate → semantics → wait for load (30s) → reload → screenshot-all → page manifest |
 | `scripts/Invoke-PbipRefresh.ps1` | Triggers a data refresh via UI automation — the bridge has no refresh method, and a freshly generated PBIP renders empty until refreshed once |
 | `scripts/hooks/pbip-stop-hook.ps1` | `Stop` hook wrapper with change detection and fix budget |
@@ -134,11 +135,35 @@ Design notes worth knowing before you rely on it:
 - **Load errors are caught in source, not scraped off the screen.** The bridge cannot read Desktop's "Issues were found" dialog — during a failed load there is no report to serve the API. `scripts/Test-PbipSemantics.ps1` finds that class of error before Desktop ever sees the file: measure/column name collisions, duplicate measure names, relationship endpoints that do not exist, unresolved `'Table'[Column]` references, resource items referenced but never registered, duplicate page ids. It runs in the verify loop before Desktop is touched, and file-local checks run on every edit via the `PostToolUse` hook.
 - **The loop waits 30 seconds for a load, then says which failure it was** — `not_running`, `no_bridge`, `other_project` (it names what *is* open), or `load_failed`. Only the last blocks the turn: a rejected definition is a defect, not an outage.
 - **On `load_failed` it reads Desktop's error dialog** — text, the "Copy details to clipboard" diagnostic (which carries the offending file and line), and a cropped PNG. That is usually enough to fix the source directly.
+- **A reload can raise a different dialog** — *"Your report has issues that could not be resolved"*, from a PBIR schema fault such as a malformed filter expression. `powerbi-desktop reload` still reports success, so the loop watches for the modal. It collapses the issue list (one bad expression key produces ~49 lines) to its root cause, presses *Continue*, takes screenshots marked **UNTRUSTED** — Continue silently drops whatever failed, so a broken filter stops filtering and the page still looks normal — closes the instance so the degraded report can't be saved over the source, and blocks with status `loaded_with_issues`.
+- **Filter expressions are checked locally.** `powerbi-report-author validate` only catches malformed filter expressions with its remote schema, and reports success under `--no-schema`. `Test-PbipSemantics.ps1` checks them without the network, and suggests the intended key (`Inn` → `In`).
 - **It recovers from a load failure on its own** — capture the dialog, dismiss it, close the spent instance, reopen, retry. The order is deliberate: `powerbi-desktop open` starts a *new* instance rather than reusing the running one, so the failed window has to be gone before the reopen. Two guarantees keep that safe — the reopen is **net-zero on failure** (the running-instance count returns to what it was, and anything it starts it also closes), and it only ever closes an instance it started itself or one that was showing a load-error dialog, never an arbitrary *Untitled* window that might hold unsaved work. `-NoReopen` turns the recovery off.
 - **A first-run report may not open at all.** Power BI Desktop can reject a freshly generated PBIP with an error dialog and leave the window on *Untitled* — the modal blocks the bridge, and *continue with errors* opens the report with the failing parts dropped, so the screenshots lie. Dismiss it, fix the reported PBIR/TMDL error, reopen, and confirm `powerbi-desktop status` shows the project path. Details in `.claude/skills/powerbi-visual-verify/SKILL.md`.
 - **Theme JSON is cached by Desktop.** After editing a theme, rename it with a new suffix and update its `report.json` registration, or reopen Desktop; a plain reload shows stale colors.
 
 Run it manually with `powershell -NoProfile -File scripts\Invoke-PbipVerify.ps1 -Mode Review`. Full detail is in `copilot-instructions.md`.
+
+## Custom Visuals (`.pbiviz`)
+
+`.claude/skills/powerbi-pbiviz-custom-visuals/` builds custom visuals as source-controlled `pbiviz` projects and embeds their bundles directly into `<Project>.Report/CustomVisuals/`, so the report opens complete on any machine — nothing to import, no third-party marketplace licence to expire on you.
+
+Use it when a native visual (or an SVG measure in an image visual) cannot express the design — IBCS statement tables, variance strips, running P&L results — or when a report depends on an expired or unapproved marketplace visual that needs replacing.
+
+```
+0 spec → 1 preflight → 2 scaffold → 3 capabilities → 4 implement → 5 build + embed
+      → 6 bind visual.json → 7 validate → 8 open in Desktop + screenshot → 9 fold back
+```
+
+| What it provides | Detail |
+| --- | --- |
+| **Starter templates** | `varianceTable` (IBCS statement/cross-tab, running results, ratio rows), `varianceChart` (IBCS period chart, variance strip), `blank` (minimal skeleton showing every required pattern) |
+| **Shared TypeScript library** | `tokens.ts`, `dom.ts`, `format.ts`, `props.ts`, `interaction.ts`, `scale.ts`, `text.ts`, `paths.ts`, `base.less` — authored once, synced into every visual project at build time |
+| **`tools/new_visual.py`** | Scaffolds a visual from a template, mints its GUID, registers it in `tools/visuals.json`, installs the shared library and sync tooling on first use |
+| **`tools/sync-visuals.mjs`** | Builds, embeds, registers in `report.json`, and verifies every `visual.json` reference resolves — the highest-value check, since an unregistered GUID renders as a blank box with no error |
+| **`tools/pbir_helpers.py`** | Python builders for `visual.json` (roles, filters, literal encoding, chrome) plus `check_against_capabilities()`, which fails fast on a role or object typo instead of letting Desktop render it silently blank or ignored |
+| **Reference docs** | Capabilities/dataView design, Format pane properties, interactivity (selection, tooltips, expand/collapse), IBCS design conventions, PBIP embedding mechanics, replacing a licensed visual end to end, troubleshooting |
+
+Non-negotiables the skill enforces: a GUID never changes once bound (rename via `displayName` only); Desktop must be closed while `sync-visuals.mjs` runs and reopened afterward (it caches bundles by guid+version); no `innerHTML`, no external network, no vendor branding or licence imagery; a visual is never done on a successful build — only a reviewed Desktop screenshot counts, handed off to the `powerbi-visual-verify` skill above.
 
 ## Automation Overview
 
