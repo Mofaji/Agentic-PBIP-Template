@@ -17,6 +17,10 @@
                        (exactly the error in the reported dialog)
                      - duplicate column names in a table
                      - duplicate measure names in a table
+                     - a filterConfig condition whose expression key is not a
+                       kind the PBIR schema accepts ('Inn' where 'In' was meant),
+                       a Column/Measure missing SourceRef/Property, or a SourceRef
+                       naming an alias the filter's From never declares
 
       CROSS-FILE   Only meaningful once the model is complete, so these run in the
                    verify loop before Desktop is opened - never per-edit, where a
@@ -234,6 +238,176 @@ function Test-TmdlFileLocal {
     return @($problems)
 }
 
+# Expression kinds the PBIR semantic-query schema accepts, as listed verbatim by
+# Power BI Desktop 2.157 in its "One of the properties ... must be provided" message.
+# A newer schema may add kinds; if this check flags a key Desktop itself accepts,
+# add it here.
+$script:PbirExpressionKinds = @(
+    'SourceRef','Column','Measure','Min','Max','Aggregation','Percentile','Hierarchy',
+    'HierarchyLevel','PropertyVariationSource','Subquery','Discretize','And','Between',
+    'In','Or','Comparison','Not','Contains','StartsWith','Exists','Literal','DateSpan',
+    'DateAdd','Now','DefaultValue','AnyValue','Arithmetic','Floor','ScopedEval',
+    'FilteredEval','TransformTableRef','TransformOutputRoleRef','SparklineData',
+    'NativeVisualCalculation','FillRule','GroupRef','ResourcePackageItem','RoleRef',
+    'SummaryValueRef','AllRolesRef','SelectRef','ThemeDataColor','Conditional',
+    'NativeMeasure','NativeColumn','VisualTopN'
+)
+
+# Properties of an expression kind that are themselves expressions. Only these are
+# descended into; everything else (ComparisonKind, Property, Function, Values...)
+# is data and is left alone.
+$script:PbirExpressionSlots = @('Left', 'Right', 'Expression', 'LowerBound', 'UpperBound')
+$script:PbirExpressionListSlots = @('Expressions')
+
+function Get-ClosestName {
+    # Case-insensitive match first, then edit distance <= 2.
+    param([string]$Name, [string[]]$Candidates)
+    $best = $null; $bestD = 99
+    foreach ($c in $Candidates) {
+        if ($c -ieq $Name) { return $c }
+        $a = $Name.ToLowerInvariant(); $b = $c.ToLowerInvariant()
+        $prev = New-Object int[] ($b.Length + 1)
+        for ($j = 0; $j -le $b.Length; $j++) { $prev[$j] = $j }
+        for ($i = 1; $i -le $a.Length; $i++) {
+            $cur = New-Object int[] ($b.Length + 1)
+            $cur[0] = $i
+            for ($j = 1; $j -le $b.Length; $j++) {
+                $cost = 1
+                if ($a[$i - 1] -eq $b[$j - 1]) { $cost = 0 }
+                $cur[$j] = [math]::Min([math]::Min($prev[$j] + 1, $cur[$j - 1] + 1), $prev[$j - 1] + $cost)
+            }
+            $prev = $cur
+        }
+        if ($prev[$b.Length] -lt $bestD) { $bestD = $prev[$b.Length]; $best = $c }
+    }
+    if ($bestD -le 2) { return $best }
+    return $null
+}
+
+function Test-PbirExpression {
+    <#
+      Walks one expression node. Findings carry a JSON pointer in the same form
+      Desktop's dialog uses, so each one lines up with the dialog it prevents.
+    #>
+    param($Node, [string]$Pointer, [string[]]$Aliases, $Problems)
+
+    if ($null -eq $Node -or $Node -isnot [System.Management.Automation.PSCustomObject]) {
+        $Problems.Add("$Pointer is not an expression object.")
+        return
+    }
+    $keys = @($Node.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($keys.Count -eq 0) {
+        $Problems.Add("$Pointer is an empty object - it needs one expression kind such as 'Comparison', 'In' or 'Column'.")
+        return
+    }
+
+    foreach ($k in $keys) {
+        if ($script:PbirExpressionKinds -ccontains $k) { continue }
+        $hint = Get-ClosestName -Name $k -Candidates $script:PbirExpressionKinds
+        $msg = "$Pointer uses '$k', which is not an expression kind the PBIR schema accepts."
+        if ($hint) { $msg += " Did you mean '$hint'?" }
+        $msg += " Power BI Desktop reports this as a list of ~49 'Required property' issues, and choosing Continue silently drops the filter."
+        $Problems.Add($msg)
+    }
+
+    foreach ($k in $keys) {
+        if ($script:PbirExpressionKinds -cnotcontains $k) { continue }
+        $body = $Node.$k
+        $here = "$Pointer/$k"
+        if ($body -isnot [System.Management.Automation.PSCustomObject]) { continue }
+        $bodyKeys = @($body.PSObject.Properties | ForEach-Object { $_.Name })
+
+        if ($k -eq 'Column' -or $k -eq 'Measure' -or $k -eq 'Hierarchy') {
+            if ($bodyKeys -notcontains 'Expression') {
+                $Problems.Add("$here is missing 'Expression' (normally a SourceRef).")
+            }
+            if ($k -ne 'Hierarchy' -and $bodyKeys -notcontains 'Property') {
+                $Problems.Add("$here is missing 'Property' - the column or measure name.")
+            }
+        }
+        if ($k -eq 'SourceRef') {
+            if ($bodyKeys -notcontains 'Source' -and $bodyKeys -notcontains 'Entity') {
+                $Problems.Add("$here needs 'Source' (a From alias) or 'Entity' (a table name).")
+            } elseif ($bodyKeys -contains 'Source' -and $Aliases.Count -gt 0 -and $Aliases -notcontains [string]$body.Source) {
+                $Problems.Add("$here refers to alias '$($body.Source)', but the filter's From declares only: $($Aliases -join ', ').")
+            }
+        }
+
+        foreach ($slot in $script:PbirExpressionSlots) {
+            if ($bodyKeys -contains $slot) {
+                Test-PbirExpression -Node $body.$slot -Pointer "$here/$slot" -Aliases $Aliases -Problems $Problems
+            }
+        }
+        foreach ($slot in $script:PbirExpressionListSlots) {
+            if ($bodyKeys -contains $slot) {
+                $n = 0
+                foreach ($item in @($body.$slot)) {
+                    Test-PbirExpression -Node $item -Pointer "$here/$slot/$n" -Aliases $Aliases -Problems $Problems
+                    $n++
+                }
+            }
+        }
+    }
+}
+
+function Test-PbirFileLocal {
+    <#
+      File-local PBIR checks - true regardless of any other file, so safe on every
+      edit. Covers filterConfig in report.json, page.json and visual.json, the
+      source of Desktop's "Your report has issues that could not be resolved".
+
+      This is also what closes the offline gap: powerbi-report-author catches this
+      class only with its REMOTE schema, and reports "succeeded" under --no-schema.
+
+      Returns a string[] of problems, empty when clean.
+    #>
+    param([Parameter(Mandatory = $true)][string]$FilePath)
+
+    $problems = New-Object System.Collections.Generic.List[string]
+    $doc = $null
+    try {
+        $doc = Get-Content -LiteralPath $FilePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch { return @() }
+    if (-not $doc -or @($doc.PSObject.Properties.Name) -notcontains 'filterConfig') { return @() }
+
+    $filters = @()
+    if ($doc.filterConfig -and @($doc.filterConfig.PSObject.Properties.Name) -contains 'filters') {
+        $filters = @($doc.filterConfig.filters)
+    }
+
+    for ($fi = 0; $fi -lt $filters.Count; $fi++) {
+        $f = $filters[$fi]
+        if (-not $f) { continue }
+        $base = "/filterConfig/filters/$fi"
+        $fkeys = @($f.PSObject.Properties.Name)
+
+        if ($fkeys -contains 'field' -and $f.field) {
+            Test-PbirExpression -Node $f.field -Pointer "$base/field" -Aliases @() -Problems $problems
+        }
+        if ($fkeys -notcontains 'filter' -or -not $f.filter) { continue }
+        $q = $f.filter
+        $qkeys = @($q.PSObject.Properties.Name)
+
+        $aliases = @()
+        if ($qkeys -contains 'From') {
+            foreach ($src in @($q.From)) { if ($src -and $src.Name) { $aliases += [string]$src.Name } }
+        }
+        if ($qkeys -contains 'Where') {
+            $wi = 0
+            foreach ($w in @($q.Where)) {
+                $wp = "$base/filter/Where/$wi"
+                if (-not $w -or @($w.PSObject.Properties.Name) -notcontains 'Condition') {
+                    $problems.Add("$wp has no 'Condition'.")
+                } else {
+                    Test-PbirExpression -Node $w.Condition -Pointer "$wp/Condition" -Aliases $aliases -Problems $problems
+                }
+                $wi++
+            }
+        }
+    }
+    return @($problems)
+}
+
 function Test-PbipSemantics {
     <#
       Whole-project checks, for the point where the model is supposed to be complete.
@@ -322,6 +496,18 @@ function Test-PbipSemantics {
     }
 
     # ---- Report side --------------------------------------------------------
+    $defDirR = Join-Path $Project.ReportDir "definition"
+    if (Test-Path -LiteralPath $defDirR) {
+        foreach ($jf in @(Get-ChildItem -LiteralPath $defDirR -Recurse -File -Filter "*.json" -ErrorAction SilentlyContinue)) {
+            if (@('report.json', 'page.json', 'visual.json') -notcontains $jf.Name) { continue }
+            $checked++
+            $relName = $jf.FullName.Substring($defDirR.Length).TrimStart('\', '/').Replace('\', '/')
+            foreach ($pr in (Test-PbirFileLocal -FilePath $jf.FullName)) {
+                $errors.Add("$relName $pr")
+            }
+        }
+    }
+
     $reportJson = Join-Path $Project.ReportDir "definition\report.json"
     $registered = @{}
     if (Test-Path -LiteralPath $reportJson) {
@@ -394,7 +580,11 @@ function Test-PbipSemantics {
 # --- Standalone entry point -------------------------------------------------
 if ($MyInvocation.InvocationName -ne '.') {
     if ($Path) {
-        $problems = @(Test-TmdlFileLocal -FilePath $Path)
+        if ([System.IO.Path]::GetExtension($Path) -ieq '.json') {
+            $problems = @(Test-PbirFileLocal -FilePath $Path)
+        } else {
+            $problems = @(Test-TmdlFileLocal -FilePath $Path)
+        }
         if ($problems.Count -eq 0) {
             if (-not $Quiet) { Write-Host "OK: no file-local semantic problems in $(Split-Path $Path -Leaf)" }
             exit 0
@@ -419,6 +609,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         exit 0
     }
     Write-Host ""
-    Write-Host "$($res.Errors.Count) error(s). These are the failures Power BI Desktop reports as an 'Issues were found' dialog at load time."
+    Write-Host "$($res.Errors.Count) error(s). These are the failures Power BI Desktop reports at load or reload time - as 'Issues were found', or 'Your report has issues that could not be resolved'."
     exit 1
 }

@@ -15,6 +15,8 @@ When editing PBIP artifacts (`*.pbip`, `*.pbir`, `*.tmdl`, report/page/visual JS
 
 Do not initialize or scaffold a custom visual project unless the user explicitly asks for custom visual extension development.
 
+For scaffolding, embedding a `.pbiviz` into a PBIP report (`CustomVisuals/`, `report.json` registration, `visual.json` bindings) and replacing licensed third-party visuals, follow `.claude/skills/powerbi-pbiviz-custom-visuals/SKILL.md` and its starter kit; this file remains the reference for techniques inside a visual.
+
 ## Overview
 This document provides comprehensive instructions for developing custom Power BI visuals using modern web technologies including React, D3.js, TypeScript, and advanced testing frameworks, based on Microsoft's official guidance and community best practices.
 

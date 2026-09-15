@@ -9,6 +9,7 @@ Template.SemanticModel/** @your-org/bi-modelers
 
 # Report UX and visual standards
 Template.Report/** @your-org/bi-report-authors
+.claude/skills/powerbi-pbiviz-custom-visuals/** @your-org/bi-report-authors
 
 # Agent steering, specs and hooks
 AGENTS.md @your-org/bi-platform-team

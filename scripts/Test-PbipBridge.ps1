@@ -113,7 +113,10 @@ if ($project) {
     if ($val.NotInstalled) {
         Add-Check -Name "PBIR validation" -Ok $false -Detail $val.Detail -Fix "npm install -g @microsoft/powerbi-report-authoring-cli@latest"
     } elseif ($val.Ok) {
-        Add-Check -Name "PBIR validation" -Ok $true -Detail "clean ($($val.WarningCount) warning(s))"
+        # --no-schema skips the remote JSON schema, so it cannot see a malformed
+        # filter expression. The "Semantic validation" row above covers that class
+        # locally; say so rather than calling this row simply "clean".
+        Add-Check -Name "PBIR validation" -Ok $true -Detail "clean offline ($($val.WarningCount) warning(s)) - remote schema not checked; filter expressions are covered by Semantic validation"
     } else {
         Add-Check -Name "PBIR validation" -Ok $false -Detail $val.Detail -Fix "Fix the reported PBIR errors; reload is refused while the definition is invalid."
     }

@@ -7,7 +7,11 @@
     first-build PBIP, at the moment it is introduced rather than three steps later
     when Desktop shows an error dialog and leaves the window on "Untitled".
 
-      *.json / *.pbir / *.pbism / *.pbip   must parse
+      *.json / *.pbir / *.pbism / *.pbip   must parse; report.json, page.json and
+                                           visual.json must also carry well-formed
+                                           filterConfig conditions (the source of
+                                           "Your report has issues that could not
+                                           be resolved")
       *.tmdl                               no UTF-8 BOM, no // comments (guardrail 5),
                                            and no file-local semantic error - a measure
                                            colliding with a column name, or a duplicate
@@ -62,10 +66,23 @@ try {
     $problems = @()
 
     if ($ext -in @('.json', '.pbir', '.pbism', '.pbip')) {
+        $parsed = $false
         try {
             $null = Get-Content -LiteralPath $full -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            $parsed = $true
         } catch {
             $problems += "invalid JSON: $($_.Exception.Message)"
+        }
+
+        # Filter conditions are file-local, so they are safe to enforce per edit.
+        # This is the check that stands in for the remote schema: without it, a
+        # typo'd expression key passes offline validation and only surfaces as a
+        # 49-line dialog in Desktop.
+        if ($parsed -and @('report.json', 'page.json', 'visual.json') -contains $name) {
+            try {
+                . (Join-Path $PSScriptRoot "..\Test-PbipSemantics.ps1")
+                foreach ($fp in @(Test-PbirFileLocal -FilePath $full)) { $problems += $fp }
+            } catch { }
         }
     } elseif ($ext -eq '.tmdl') {
         $bytes = [System.IO.File]::ReadAllBytes($full)

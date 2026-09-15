@@ -45,7 +45,7 @@ edit PBIR/TMDL → validate → reload Desktop → screenshot every page → rev
 
 A `Stop` hook runs it automatically and blocks the turn until the screenshots have been reviewed. Preflight with `powershell -NoProfile -File scripts\Test-PbipBridge.ps1`. If the bridge is unavailable the loop fails open — say the report was not visually verified rather than claiming it renders correctly.
 
-On a **first build**, Power BI Desktop often refuses to load the PBIP at all and leaves the window on *Untitled*. That is a load error, not a broken bridge, and *continue with errors* is not a fix. The bridge cannot read that dialog — run `scripts\Test-PbipSemantics.ps1` to find the cause in the source. See *Known caveats* in `.claude/skills/powerbi-visual-verify/SKILL.md`.
+On a **first build**, Power BI Desktop often refuses to load the PBIP at all and leaves the window on *Untitled*. That is a load error, not a broken bridge, and *continue with errors* is not a fix. The bridge cannot read that dialog — run `scripts\Test-PbipSemantics.ps1` to find the cause in the source. A reload can raise a second dialog, *"Your report has issues that could not be resolved"* - a PBIR schema fault, usually a malformed filter. Screenshots taken after pressing *Continue* on it are **untrusted**: the failing objects are silently dropped. See *Known caveats* in `.claude/skills/powerbi-visual-verify/SKILL.md`.
 
 ## Before you finish
 

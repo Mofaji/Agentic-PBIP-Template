@@ -69,7 +69,7 @@ Prose asks. Hooks enforce. Configured in `.claude/settings.json`, implemented in
 | --- | --- | --- |
 | `SessionStart` | `pbip-session-brief.ps1` | The guardrails and live bridge status are in context before the first prompt |
 | `PreToolUse` | `pbip-write-guard.ps1` | No writes to `Proposals/`, `**/.pbi/`, `tests/screenshots/`, `.claude/.pbip-state/` |
-| `PostToolUse` | `pbip-validate-hook.ps1` | Every PBIP JSON written parses; TMDL has no BOM, no `//` comments, and no measure/column name collision |
+| `PostToolUse` | `pbip-validate-hook.ps1` | Every PBIP JSON written parses and carries well-formed filter expressions; TMDL has no BOM, no `//` comments, and no measure/column name collision |
 | `Stop` | `pbip-stop-hook.ps1` | The turn does not end until the rendered screenshots have been reviewed |
 
 Two design rules every hook here follows:
